@@ -1,0 +1,59 @@
+# agora — local message bus for cross-vendor agent coordination.
+#
+# Single-node Redpanda. Kafka wire on 9092 for clients, HTTP proxy on 8082 for
+# runtimes with no Kafka client, admin API on 9644. Pinned by tag: GKE-style
+# ":latest" caching bites locally too, and a silently-moved broker version is a
+# bad afternoon.
+#
+#   docker compose up -d
+#   ./bin/agora doctor
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v26.2.1
+    container_name: agora-redpanda
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --default-log-level=warn
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=localhost:8082
+    ports:
+      - "9092:9092"   # kafka wire — every agent runtime speaks this
+      - "8082:8082"   # http proxy — curl fallback for clientless runtimes
+      - "9644:9644"   # admin api — health, topic config
+    volumes:
+      # MUST be a named volume, never a host bind mount. A macOS bind mount
+      # comes through VirtioFS reporting 1 MiB block alignment; Redpanda's
+      # chunk cache is aligned to 4096, the modulo check in
+      # segment_appender.cc:70 fails, and the broker SIGTRAPs on boot with
+      # "unexpected alignment 4096 % 1048576 != 0". A named volume lands on
+      # ext4 inside the Linux VM and satisfies the check.
+      - agora-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 5s
+
+  # Raw Kafka inspection — consumer-group lag, per-partition offsets, message
+  # bytes. Complements ./bin/agora-web, which renders conversations but knows
+  # nothing about offsets. Opt in:  docker compose --profile console up -d
+  console:
+    image: redpandadata/console:v3.10.0
+    container_name: agora-console
+    profiles: [console]
+    depends_on: [redpanda]
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+
+volumes:
+  agora-data:
+    name: agora-data

@@ -1,0 +1,119 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * agora-web — live dashboard for the agent chat room.
+ *
+ * Two data paths:
+ *   backlog  — shells out to `agora dump`, so envelope parsing lives in one
+ *              place rather than being reimplemented here
+ *   live     — one long-running `rpk topic consume -o end` child, streamed to
+ *              browsers over SSE
+ *
+ * The live tail deliberately uses NO consumer group. A group would make this
+ * dashboard a competing consumer and it would start stealing messages from the
+ * agents' own doorbells.
+ */
+
+const http = require('http');
+const path = require('path');
+const fs = require('fs');
+const readline = require('readline');
+const { spawn, execFileSync } = require('child_process');
+
+const REPO = path.resolve(__dirname, '..');
+const CLI = path.join(REPO, 'bin', 'agora');
+const PAGE = path.join(REPO, 'web', 'index.html');
+const CONTAINER = process.env.AGORA_CONTAINER || 'agora-redpanda';
+const PORT = Number(process.env.AGORA_WEB_PORT || 7788);
+const TOPICS = ['bus.threads', 'bus.edits', 'bus.claims', 'bus.decisions', 'bus.presence'];
+
+const clients = new Set();
+
+function dump() {
+  try {
+    return execFileSync(CLI, ['dump'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  } catch (e) {
+    return JSON.stringify({ error: 'broker unreachable', detail: String(e.message || e) });
+  }
+}
+
+function broadcast(env) {
+  const frame = `data: ${JSON.stringify(env)}\n\n`;
+  for (const res of clients) {
+    try { res.write(frame); } catch { clients.delete(res); }
+  }
+}
+
+/** One tail for the whole process, fanned out to every connected browser. */
+function startTail() {
+  const child = spawn('docker', [
+    'exec', CONTAINER, 'rpk', 'topic', 'consume', ...TOPICS,
+    '-o', 'end', '-f', 'json', '--pretty-print=false',
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+  readline.createInterface({ input: child.stdout }).on('line', (line) => {
+    let env;
+    try {
+      const rec = JSON.parse(line);
+      env = JSON.parse(rec.value);
+      env._topic = rec.topic;
+    } catch { return; }
+    // Recompute citation freshness at delivery time — a ref pinned an hour ago
+    // may be stale now, and the reader needs to know that, not what was true
+    // when it was written.
+    for (const r of env.refs || []) {
+      const abs = path.isAbsolute(r.path) ? r.path : path.resolve(REPO, r.path);
+      try {
+        const cur = require('crypto').createHash('sha256')
+          .update(fs.readFileSync(abs)).digest('hex').slice(0, 16);
+        r.stale = cur !== r.sha256;
+      } catch { r.stale = 'deleted'; }
+    }
+    broadcast(env);
+  });
+
+  child.on('exit', (code) => {
+    process.stderr.write(`agora-web: tail exited (${code}), restarting in 2s\n`);
+    setTimeout(startTail, 2000);
+  });
+}
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+
+  if (url.pathname === '/api/stream') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    res.write(': connected\n\n');
+    clients.add(res);
+    const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 25000);
+    req.on('close', () => { clearInterval(ping); clients.delete(res); });
+    return;
+  }
+
+  if (url.pathname === '/api/dump') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(dump());
+  }
+
+  if (url.pathname === '/') {
+    fs.readFile(PAGE, (err, buf) => {
+      if (err) { res.writeHead(500); return res.end('web/index.html missing'); }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(buf);
+    });
+    return;
+  }
+
+  res.writeHead(404); res.end('not found');
+});
+
+server.listen(PORT, '127.0.0.1', () => {
+  process.stdout.write(`agora-web  →  http://localhost:${PORT}\n`);
+  process.stdout.write(`watching     ${TOPICS.join(' ')}\n`);
+  startTail();
+});

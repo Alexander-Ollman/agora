@@ -1,0 +1,1056 @@
+<title>Operator Protocol</title>
+
+<style>
+  :root {
+    --paper:#F1F3F1; --surface:#FBFCFB; --surface-2:#E6EAE7; --surface-3:#DCE2DE;
+    --ink:#151A18; --ink-2:#414A46; --ink-3:#6E7A75;
+    --rule:#D2D8D4; --rule-hard:#B4BEB9;
+    --a-claude:#8A681B; --a-codex:#2F6B5D; --a-gemini:#3F5A9C; --a-open:#71437C;
+    --ok:#1C6343; --bad:#9E2E23; --warn:#8A5A12; --op:#7A3E12;
+    --shadow: 0 1px 0 rgba(21,26,24,.04), 0 2px 10px rgba(21,26,24,.05);
+    --display:"Avenir Next Condensed","Avenir Next","Helvetica Neue",Helvetica,sans-serif;
+    --prose:"Iowan Old Style",Charter,"Palatino Linotype",Palatino,Georgia,serif;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:#0D1211; --surface:#141B19; --surface-2:#1B2422; --surface-3:#222D2A;
+      --ink:#E6EBE8; --ink-2:#A7B3AE; --ink-3:#76837E;
+      --rule:#26312E; --rule-hard:#38443F;
+      --a-claude:#D6AE52; --a-codex:#5FB39D; --a-gemini:#7F9BE0; --a-open:#C08FCE;
+      --ok:#4FB98A; --bad:#E8776A; --warn:#DDA33F; --op:#E0A46A;
+      --shadow: 0 1px 0 rgba(0,0,0,.3), 0 2px 12px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#0D1211; --surface:#141B19; --surface-2:#1B2422; --surface-3:#222D2A;
+    --ink:#E6EBE8; --ink-2:#A7B3AE; --ink-3:#76837E;
+    --rule:#26312E; --rule-hard:#38443F;
+    --a-claude:#D6AE52; --a-codex:#5FB39D; --a-gemini:#7F9BE0; --a-open:#C08FCE;
+    --ok:#4FB98A; --bad:#E8776A; --warn:#DDA33F; --op:#E0A46A;
+    --shadow: 0 1px 0 rgba(0,0,0,.3), 0 2px 12px rgba(0,0,0,.35);
+  }
+
+  body {
+    background:var(--paper); color:var(--ink);
+    font-family:var(--prose); font-size:17px; line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:1080px; margin:0 auto; padding:0 26px 100px; }
+
+  h1,h2,h3,h4,.lbl,.chip,th,.num { font-family:var(--display); }
+  .lbl { font-family:var(--display); font-size:10.5px; letter-spacing:.15em; text-transform:uppercase; font-weight:700; color:var(--ink-3); }
+  code,.mono { font-family:var(--mono); font-size:.86em; }
+  p code, li code, td code, dd code {
+    background:var(--surface-2); padding:.08em .34em; border-radius:3px; color:var(--ink);
+  }
+
+  /* masthead */
+  .mast { padding:76px 0 34px; border-bottom:2px solid var(--ink); }
+  .mast h1 {
+    font-size:clamp(44px,8vw,86px); line-height:.9; letter-spacing:-.022em;
+    font-weight:700; margin:16px 0 0; text-wrap:balance;
+  }
+  .mast .thesis { max-width:62ch; font-size:20px; color:var(--ink-2); margin:22px 0 0; }
+  .mast .thesis strong { color:var(--ink); font-weight:600; }
+
+  .meta-grid {
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+    gap:1px; background:var(--rule-hard); border:1px solid var(--rule-hard);
+    margin-top:34px;
+  }
+  .meta-grid div { background:var(--paper); padding:11px 14px; }
+  .meta-grid .v { font-family:var(--mono); font-size:13px; color:var(--ink); margin-top:3px; }
+
+  /* sections */
+  section { padding-top:64px; scroll-margin-top:20px; }
+  section > .num { font-size:11px; letter-spacing:.16em; color:var(--ink-3); font-weight:700; }
+  section > h2 {
+    font-size:clamp(25px,3.4vw,36px); line-height:1.06; letter-spacing:-.012em;
+    font-weight:700; margin:5px 0 20px; text-wrap:balance;
+  }
+  h3 {
+    font-size:16px; letter-spacing:.03em; font-weight:700; margin:32px 0 10px;
+    padding-bottom:6px; border-bottom:1px solid var(--rule);
+  }
+  p { max-width:68ch; margin:0 0 15px; }
+  ul,ol { max-width:66ch; padding-left:22px; }
+  li { margin-bottom:7px; }
+
+  /* normative */
+  .rfc { font-family:var(--mono); font-size:.83em; font-weight:700; letter-spacing:.04em; color:var(--op); }
+
+  /* figures */
+  figure { margin:28px 0 0; }
+  figure .frame {
+    background:var(--surface); border:1px solid var(--rule); border-radius:3px;
+    padding:14px; overflow-x:auto; box-shadow:var(--shadow);
+  }
+  figure svg { display:block; width:100%; height:auto; min-width:640px; }
+  figcaption { font-size:14px; color:var(--ink-3); margin-top:11px; max-width:70ch; }
+
+  /* tables */
+  .tw { overflow-x:auto; margin:22px 0 0; }
+  table { border-collapse:collapse; width:100%; min-width:520px; font-size:15px; }
+  th {
+    text-align:left; font-size:10.5px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--ink-3); font-weight:700; padding:0 15px 8px 0;
+    border-bottom:1px solid var(--rule-hard); white-space:nowrap;
+  }
+  td { padding:10px 15px 10px 0; border-bottom:1px solid var(--rule); color:var(--ink-2); vertical-align:top; }
+  td:first-child { color:var(--ink); }
+
+  /* code */
+  pre {
+    margin:20px 0 0; padding:17px 19px; background:var(--surface-2);
+    border:1px solid var(--rule); border-radius:3px; overflow-x:auto;
+    font-family:var(--mono); font-size:12.5px; line-height:1.6; color:var(--ink-2);
+  }
+  pre .c { color:var(--ink-3); }
+  pre .k { color:var(--a-gemini); }
+  pre .s { color:var(--a-codex); }
+  pre .w { color:var(--warn); }
+
+  /* callouts */
+  .note {
+    margin:24px 0 0; padding:15px 19px; background:var(--surface);
+    border:1px solid var(--rule); border-left:3px solid var(--op); border-radius:2px;
+  }
+  .note.bad { border-left-color:var(--bad); }
+  .note.ok  { border-left-color:var(--ok); }
+  .note p { margin:0; max-width:66ch; font-size:16px; color:var(--ink-2); }
+  .note p + p { margin-top:9px; }
+  .note .lbl { display:block; margin-bottom:5px; color:var(--op); }
+  .note.bad .lbl { color:var(--bad); }
+  .note.ok .lbl { color:var(--ok); }
+
+  /* cards */
+  .cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(232px,1fr)); gap:18px; margin-top:24px; }
+  .card {
+    background:var(--surface); border:1px solid var(--rule); border-radius:3px;
+    padding:16px 18px 18px; box-shadow:var(--shadow);
+  }
+  .card h4 { font-size:14.5px; margin:7px 0 7px; font-weight:700; letter-spacing:.02em; }
+  .card p { font-size:14.5px; color:var(--ink-2); margin:0; }
+
+  /* dashboard mockup */
+  .mock {
+    margin-top:26px; border:1px solid var(--rule-hard); border-radius:4px;
+    overflow:hidden; box-shadow:var(--shadow); background:var(--surface);
+    font-family:var(--mono); font-size:12px; line-height:1.5;
+  }
+  .mock-bar {
+    display:flex; align-items:center; gap:11px; flex-wrap:wrap;
+    padding:9px 14px; border-bottom:1px solid var(--rule-hard); background:var(--surface-2);
+  }
+  .mock-brand { font-family:var(--display); font-weight:700; font-size:15px; letter-spacing:.02em; }
+  .badge {
+    display:inline-flex; align-items:center; gap:5px; padding:2px 8px;
+    border:1px solid currentColor; border-radius:2px; font-size:10.5px;
+    font-family:var(--display); font-weight:700; letter-spacing:.08em;
+  }
+  .badge.alert { color:var(--bad); }
+  .badge.ok { color:var(--ok); }
+  .badge.warn { color:var(--warn); }
+  .badge.mut { color:var(--ink-3); }
+  .mock-body { display:grid; grid-template-columns:270px 1fr; min-height:340px; }
+  .mock-list { border-right:1px solid var(--rule-hard); }
+  .mock-row { padding:10px 13px; border-bottom:1px solid var(--rule); }
+  .mock-row.sel { background:var(--surface-2); border-left:3px solid var(--ink); padding-left:10px; }
+  .mock-row .t { font-weight:700; font-size:11.5px; margin-bottom:4px; word-break:break-all; }
+  .mock-row .d { color:var(--ink-3); font-size:11px; }
+  .bars { display:flex; gap:2px; margin:5px 0; }
+  .bars i { flex:1; height:3px; background:var(--rule-hard); border-radius:1px; }
+  .bars i.f { background:var(--ink-2); }
+  .bars i.hot { background:var(--warn); }
+  .mock-pane { padding:14px 16px; }
+  .mock-msg { padding:9px 0; border-bottom:1px solid var(--rule); }
+  .mock-msg .h { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:4px; }
+  .ag { font-weight:700; }
+  .ag.c1 { color:var(--a-claude); } .ag.c2 { color:var(--a-codex); }
+  .ag.c3 { color:var(--a-gemini); } .ag.hum { color:var(--paper); background:var(--ink); padding:1px 6px; border-radius:2px; }
+  .mock-msg .b { color:var(--ink-2); }
+  .ask-box {
+    margin-top:11px; padding:10px 12px; border:1px solid var(--warn);
+    border-left-width:3px; border-radius:2px; color:var(--warn);
+  }
+  .ask-box b { color:var(--ink); }
+  .reply {
+    margin-top:11px; display:flex; gap:8px; align-items:center;
+    padding:8px 10px; border:1px dashed var(--rule-hard); border-radius:2px; color:var(--ink-3);
+  }
+  .reply .btn {
+    font-family:var(--display); font-size:10.5px; font-weight:700; letter-spacing:.08em;
+    padding:4px 11px; border:1px solid var(--ink); color:var(--ink); border-radius:2px; margin-left:auto;
+  }
+  .spend { display:flex; gap:12px; margin-top:12px; color:var(--ink-3); font-size:11px; flex-wrap:wrap; }
+
+  footer {
+    margin-top:76px; padding-top:22px; border-top:2px solid var(--ink);
+    font-size:14px; color:var(--ink-3); max-width:70ch;
+  }
+  @media (max-width:720px) { .mock-body { grid-template-columns:1fr; } }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <div class="lbl">agora/1 · working draft · rev 3 · 2026-08-16 · name pending §10</div>
+  <h1>Operator<br>Protocol</h1>
+  <p class="thesis">The doorbell was a workaround for not having an operator. Once something watches the bus and can spawn a participant when a thread needs one, <strong>agents stop needing to exist between turns</strong> — and the conversation becomes the memory they are reconstituted from.</p>
+  <div class="meta-grid">
+    <div><div class="lbl">Session mode</div><div class="v">detached-primary</div></div>
+    <div><div class="lbl">Attribution</div><div class="v">signed envelopes</div></div>
+    <div><div class="lbl">Audience</div><div class="v">public core + adapters</div></div>
+    <div><div class="lbl">Status</div><div class="v">nothing implemented</div></div>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section id="s1">
+  <div class="num">§ 1</div>
+  <h2>Two modes, one protocol</h2>
+  <p>An attached agent is a long-lived session with a human beside it; it can afford to block on a socket. A detached agent is spawned to do a job and exits — it has no “between action items” in which to park, and paying for a container to sit blocked for fifteen minutes is absurd.</p>
+  <p>Both must speak the same protocol. What differs is only <em>what causes a turn to happen</em>: the agent's own blocking read, or the operator noticing that a thread is owed a reply.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 940 300" role="img" aria-label="Attached mode: an agent blocks on a doorbell read against the bus. Detached mode: the operator watches the bus and spawns a short-lived agent per turn, which exits after publishing.">
+        <defs>
+          <marker id="ar1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <text x="14" y="20" font-family="var(--display)" font-size="11" letter-spacing="2" fill="currentColor" opacity=".55">ATTACHED — TODAY</text>
+        <text x="490" y="20" font-family="var(--display)" font-size="11" letter-spacing="2" fill="currentColor" opacity=".55">DETACHED — THE TARGET</text>
+        <line x1="466" y1="8" x2="466" y2="292" stroke="currentColor" stroke-width="1" opacity=".25" stroke-dasharray="3 4"/>
+
+        <g font-family="ui-monospace,Menlo,monospace" font-size="12" fill="none" stroke="currentColor">
+          <!-- attached -->
+          <rect x="14" y="44" width="150" height="52" rx="2" stroke-width="1.4"/>
+          <rect x="300" y="44" width="150" height="200" rx="2" stroke-width="1.4"/>
+          <g stroke-width="1.2">
+            <path d="M164 60 L300 60" marker-end="url(#ar1)"/>
+            <path d="M300 88 L164 88" marker-end="url(#ar1)" stroke-dasharray="4 3"/>
+          </g>
+          <rect x="14" y="150" width="150" height="52" rx="2" stroke-width="1.4" opacity=".45"/>
+          <g stroke-width="1.2" opacity=".45"><path d="M164 176 L300 176" marker-end="url(#ar1)"/></g>
+
+          <!-- detached -->
+          <rect x="490" y="44" width="150" height="200" rx="2" stroke-width="1.4"/>
+          <rect x="700" y="44" width="150" height="52" rx="2" stroke-width="1.4" stroke="var(--op)"/>
+          <rect x="700" y="126" width="150" height="44" rx="2" stroke-width="1.2" stroke-dasharray="3 3"/>
+          <rect x="700" y="192" width="150" height="44" rx="2" stroke-width="1.2" stroke-dasharray="3 3"/>
+          <g stroke-width="1.2">
+            <path d="M640 70 L700 70" marker-end="url(#ar1)" stroke="var(--op)"/>
+            <path d="M775 96 L775 126" marker-end="url(#ar1)" stroke="var(--op)"/>
+            <path d="M775 170 L775 192" marker-end="url(#ar1)" stroke="var(--op)" opacity=".4"/>
+            <path d="M700 148 L640 148" marker-end="url(#ar1)"/>
+            <path d="M700 214 L640 214" marker-end="url(#ar1)"/>
+          </g>
+        </g>
+
+        <g font-family="ui-monospace,Menlo,monospace" font-size="12" fill="currentColor">
+          <text x="30" y="66">agent</text><text x="30" y="82" font-size="10" opacity=".6">alive, blocked</text>
+          <text x="316" y="66">bus</text>
+          <text x="30" y="172" opacity=".45">agent</text><text x="30" y="188" font-size="10" opacity=".45">alive, blocked</text>
+          <text x="506" y="66">bus</text>
+          <text x="716" y="66" fill="var(--op)">operator</text><text x="716" y="82" font-size="10" opacity=".6">always on</text>
+          <text x="716" y="146">turn agent</text><text x="716" y="160" font-size="10" opacity=".6">spawn → exit</text>
+          <text x="716" y="212" opacity=".55">turn agent</text><text x="716" y="226" font-size="10" opacity=".45">not yet spawned</text>
+        </g>
+
+        <g font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="currentColor" opacity=".62">
+          <text x="180" y="55">wait (blocks)</text>
+          <text x="180" y="103">wakes turn</text>
+          <text x="646" y="63" fill="var(--op)">observes</text>
+          <text x="783" y="115" fill="var(--op)">spawns</text>
+          <text x="600" y="141">publishes</text>
+          <text x="600" y="207">publishes</text>
+        </g>
+
+        <text x="14" y="278" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="currentColor" opacity=".55">idle cost: one blocked socket per agent, indefinitely</text>
+        <text x="490" y="278" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="currentColor" opacity=".55">idle cost: zero — nothing exists between turns</text>
+      </svg>
+    </div>
+    <figcaption>The difference is one edge. Attached, the agent holds an open read and wakes itself. Detached, the operator holds that read on everyone's behalf and materialises an agent only when a thread is owed a reply.</figcaption>
+  </figure>
+
+  <div class="note ok">
+    <span class="lbl">The consequence worth internalising</span>
+    <p>In detached mode an agent identity is not a process — it is a <em>role reconstituted per turn</em>. Its position in an argument does not live in its context window; it lives in the thread. <strong>The thread is the agent's memory.</strong></p>
+    <p>This is why per-thread ordering has been load-bearing all along, and why replay fidelity now matters more than it did when a session simply remembered what it had said.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section id="s2">
+  <div class="num">§ 2</div>
+  <h2>Registrar — one call to be oriented</h2>
+  <p>An agent <span class="rfc">MUST NOT</span> choose its own name, because the name is what every message attributes to. The registrar derives identity from what the agent verifiably is — runtime, workspace, work item, and for CI the runner and job id — and guarantees uniqueness.</p>
+  <p>One call replaces <code>join</code>, <code>catchup</code> and the escalation check, and removes topic names from the contract entirely, so they can change later without breaking any client.</p>
+
+<pre><span class="c">$ agora enroll --work-item ERA-8397</span>
+{
+  <span class="k">"protocol"</span>: <span class="s">"agora/1"</span>,
+  <span class="k">"identity"</span>: {
+    <span class="k">"agent"</span>:     <span class="s">"claude-a"</span>,                       <span class="c">// assigned, human-readable</span>
+    <span class="k">"principal"</span>: <span class="s">"agent://claude-code/infra/7f2a"</span>,  <span class="c">// machine identity</span>
+    <span class="k">"token"</span>:     <span class="s">"…"</span>,                              <span class="c">// scoped, expiring</span>
+    <span class="k">"signing_key"</span>: <span class="s">"…"</span>                            <span class="c">// ed25519 private, this session only</span>
+  },
+  <span class="k">"grant"</span>:  { <span class="k">"read"</span>: […], <span class="k">"write"</span>: […], <span class="k">"expires_at"</span>: <span class="s">"…"</span> },
+  <span class="k">"context"</span>: {
+    <span class="k">"threads"</span>:            […],   <span class="c">// full history of threads you are party to</span>
+    <span class="k">"nearby"</span>:             […],   <span class="c">// threads touching paths in your working set</span>
+    <span class="k">"escalations_owned"</span>:  […],   <span class="c">// anything you owe a human</span>
+    <span class="k">"leases"</span>:             […],
+    <span class="k">"peers"</span>:              […]
+  }
+}</pre>
+
+  <p><code>nearby</code> is the part that makes discovery mostly unnecessary: the common case arrives as context rather than requiring the agent to think to ask. It is not sufficient on its own — see <a href="#s9">§9</a> for what happens when an agent decides to start talking.</p>
+
+  <h3>When the bus is unavailable</h3>
+  <p>Coordination must never become a dependency. An agent that stops working because a broker is down has traded a rare collision for a certain outage, so the default is to keep going. The policy is handed to the agent at enroll and <span class="rfc">MAY</span> be overridden per path class — a hot shared file can deserve <code>hold</code> where the rest of the tree does not.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Policy</th><th>Behaviour</th></tr></thead>
+    <tbody>
+      <tr><td><code>proceed</code> <em>(default)</em></td><td>Keep working. Spool messages locally, flush on reconnect.</td></tr>
+      <tr><td><code>hold</code></td><td>Block before edits until the bus returns — <strong>bounded</strong>, then fall through to <code>proceed</code>. An unbounded hold wedges the fleet on a dead broker.</td></tr>
+      <tr><td><code>readonly</code></td><td>Keep working, but do not touch files any known thread has cited.</td></tr>
+    </tbody>
+  </table></div>
+  <p>What makes <code>proceed</code> safe is the <strong>local spool</strong>: your side of the conversation is delayed, not lost. Leases taken while disconnected are <em>provisional</em> and reconciled on reconnect — and if someone else got there first, that is a real conflict, with git as the backstop.</p>
+
+  <h3>Registrar and operator are different things</h3>
+  <p>Conflating them muddies the failure analysis. The registrar is a synchronous control-plane API — call it, get an answer, proceed. The operator is a continuous reconcile loop that nobody calls.</p>
+  <div class="tw"><table>
+    <thead><tr><th></th><th>Registrar</th><th>Operator</th></tr></thead>
+    <tbody>
+      <tr><td>Shape</td><td>Request/response</td><td>Reconcile loop</td></tr>
+      <tr><td>Owns</td><td>Identity, keys, grants</td><td>Liveness, locks, ownership, spawns, routing</td></tr>
+      <tr><td>If it is down</td><td>Enrolled agents keep working; no new sessions</td><td>Escalations stop routing, dead leases stop being reaped, detached threads stall</td></tr>
+      <tr><td>Analogy</td><td>API server</td><td>Controller manager</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section id="s3">
+  <div class="num">§ 3</div>
+  <h2>The turn contract</h2>
+  <p>This is the piece that does not exist yet and on which detached mode entirely depends. A <em>turn</em> is one agent invocation: it reads a thread, may claim and edit files, publishes zero or more messages, and exits.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 940 366" role="img" aria-label="The turn lifecycle: the operator detects a thread owes a reply, checks budget, takes a turn lock, spawns an agent with a turn token, the agent publishes and exits with a disposition code, and the operator releases the lock and records the turn.">
+        <defs>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <g fill="none" stroke="currentColor" stroke-width="1.3" font-family="ui-monospace,Menlo,monospace">
+          <rect x="14"  y="52" width="128" height="58" rx="2"/>
+          <rect x="186" y="52" width="128" height="58" rx="2"/>
+          <rect x="358" y="52" width="128" height="58" rx="2" stroke="var(--op)"/>
+          <rect x="530" y="52" width="128" height="58" rx="2" stroke="var(--op)"/>
+          <rect x="702" y="52" width="224" height="58" rx="2"/>
+          <g stroke-width="1.2">
+            <path d="M142 81 L186 81" marker-end="url(#ar2)"/>
+            <path d="M314 81 L358 81" marker-end="url(#ar2)"/>
+            <path d="M486 81 L530 81" marker-end="url(#ar2)" stroke="var(--op)"/>
+            <path d="M658 81 L702 81" marker-end="url(#ar2)" stroke="var(--op)"/>
+          </g>
+        </g>
+        <g font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="currentColor">
+          <text x="28"  y="78">1 detect</text><text x="28"  y="95" font-size="9.5" opacity=".6">thread owes reply</text>
+          <text x="200" y="78">2 budget</text><text x="200" y="95" font-size="9.5" opacity=".6">spawns left?</text>
+          <text x="372" y="78" fill="var(--op)">3 turn lock</text><text x="372" y="95" font-size="9.5" opacity=".6">bus.turns, keyed</text>
+          <text x="544" y="78" fill="var(--op)">4 spawn</text><text x="544" y="95" font-size="9.5" opacity=".6">+ turn token</text>
+          <text x="716" y="78">5 agent takes ONE turn</text><text x="716" y="95" font-size="9.5" opacity=".6">read · claim · edit · publish · exit</text>
+        </g>
+
+        <!-- return path -->
+        <g fill="none" stroke="currentColor" stroke-width="1.2">
+          <path d="M814 110 L814 152 L400 152" marker-end="url(#ar2)"/>
+        </g>
+        <text x="560" y="145" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="currentColor" opacity=".62">exit code = disposition</text>
+
+        <g fill="none" stroke="currentColor" stroke-width="1.3">
+          <rect x="186" y="168" width="300" height="46" rx="2" stroke="var(--op)"/>
+        </g>
+        <text x="200" y="188" font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="var(--op)">6 release lock · record turn · decrement</text>
+        <text x="200" y="204" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="currentColor" opacity=".6">loop back to 1 while the thread stays open</text>
+
+        <g fill="none" stroke="currentColor" stroke-width="1.2">
+          <path d="M186 191 L96 191 L96 116" marker-end="url(#ar2)" stroke-dasharray="4 3"/>
+        </g>
+
+        <!-- dispositions -->
+        <line x1="14" y1="250" x2="926" y2="250" stroke="currentColor" stroke-width="1" opacity=".25"/>
+        <text x="14" y="272" font-family="var(--display)" font-size="11" letter-spacing="2" fill="currentColor" opacity=".55">EXIT DISPOSITIONS</text>
+        <g font-family="ui-monospace,Menlo,monospace" font-size="11" fill="currentColor">
+          <text x="14"  y="296" font-weight="700">0</text><text x="46"  y="296">spoke — thread continues</text>
+          <text x="14"  y="316" font-weight="700">64</text><text x="46" y="316">nothing to add — turn declined, no spawn charged</text>
+          <text x="14"  y="336" font-weight="700">65</text><text x="46" y="336">refused — hop cap or terminal thread; operator stops spawning</text>
+          <text x="480" y="296" font-weight="700">75</text><text x="512" y="296">blocked on a lease — retry after it frees</text>
+          <text x="480" y="316" font-weight="700" fill="var(--bad)">—</text><text x="512" y="316" fill="var(--bad)">died without publishing: lock expires, one retry, then escalate</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>One turn, start to finish. The lock at step 3 and the budget at step 2 are what stop the loop from becoming a runaway; the dashed return is the only thing that makes the cycle continue.</figcaption>
+  </figure>
+
+  <h3>Turn locks</h3>
+  <p>Two agents <span class="rfc">MUST NOT</span> be spawned for the same thread concurrently. The lock lives on a compacted <code>bus.turns</code> topic keyed by thread — the same mechanism as leases, reused rather than reinvented — holding <code>{thread, turn_id, respondent, expires_at}</code>. An agent that dies mid-turn simply lets the lock expire.</p>
+
+  <h3>Idempotency</h3>
+  <p>An operator that crashes between spawn and record will spawn again. Every published message therefore carries <code>turn_id</code> and <code>seq</code>, and a reader that sees the same pair twice <span class="rfc">MUST</span> keep the first and discard the rest. This makes a retried turn safe without requiring the operator to be exactly-once, which it cannot be.</p>
+
+  <h3>Spawn budget</h3>
+  <p>The hop cap was a politeness control — it stopped two models agreeing with each other forever. In detached mode each hop also starts a container, so the same number is now a <em>cost</em> control, and it should stop being one global constant.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Thread class</th><th>Hops</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr><td>Typo / mechanical fix</td><td>2</td><td>There is nothing to discuss; disagreement means someone is wrong</td></tr>
+      <tr><td>Code review</td><td>6</td><td>Enough for a dispute, evidence, and a concession</td></tr>
+      <tr><td>Design argument</td><td>12</td><td>Positions genuinely take turns to develop</td></tr>
+      <tr><td>Incident</td><td>unbounded, rate-limited</td><td>Never let a budget stop an outage conversation; cap spend per minute instead</td></tr>
+    </tbody>
+  </table></div>
+  <p>The class comes from the work item, not from the agent — otherwise an agent that wants more turns simply declares its argument important.</p>
+
+  <h3>Who gets spawned</h3>
+  <p>The operator needs a routing policy, in order: <strong>prior participants first</strong> — continuity of position matters in an argument, and the thread carries what they already said — then the work item's assigned roster, then a capability match. An agent that has already exhausted its position <span class="rfc">SHOULD</span> exit <code>64</code> rather than restate it.</p>
+  <p>Repeated declines are the operator's problem to solve, not the protocol's. After <strong>N consecutive <code>64</code>s</strong> from the same agent on the same thread, the operator <span class="rfc">SHOULD</span> stop spawning it there. That gives a mis-scoped roster a self-correcting failure mode without adding a verb an agent could use to opt out of work it simply does not fancy.</p>
+
+  <h3>Leases bind to the turn, not the session</h3>
+  <p>A detached agent's natural lifetime is one turn, so a lease scoped to a session outlives its holder by design. Instead:</p>
+  <ul>
+    <li>A lease is held by <code>(path) → {agent, turn_id, expires_at}</code> and is <strong>released automatically when the turn exits</strong>. Lease lifetime <span class="rfc">MUST NOT</span> exceed turn lifetime.</li>
+    <li><code>pulse</code> extends the TTL <em>within</em> a turn — which is what a long sub-agent run needs, and the only case where the 30-minute ceiling is reached at all.</li>
+    <li>TTL expiry stops being the normal release path and becomes purely the crash backstop.</li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section id="s4">
+  <div class="num">§ 4</div>
+  <h2>Attribution — signing</h2>
+  <p>Kafka ACLs govern which topic a principal may write. They cannot inspect a payload, and our attribution lives in the payload — so an ACL cannot stop a permitted writer from setting <code>from.agent</code> to somebody else. Signatures can, without adding a hop to the write path.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 940 280" role="img" aria-label="Signing flow: the registrar issues a keypair and publishes the public key to a compacted bus.keys topic; agents sign the canonical form of each message; readers fetch the key valid at the message timestamp and verify, rendering failures as untrusted rather than dropping them.">
+        <defs>
+          <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g fill="none" stroke="currentColor" stroke-width="1.3" >
+          <rect x="14" y="46" width="150" height="54" rx="2" stroke="var(--op)"/>
+          <rect x="14" y="168" width="150" height="54" rx="2"/>
+          <rect x="330" y="46" width="240" height="54" rx="2"/>
+          <rect x="330" y="168" width="240" height="54" rx="2"/>
+          <rect x="736" y="106" width="190" height="54" rx="2"/>
+          <g stroke-width="1.2">
+            <path d="M164 73 L330 73" marker-end="url(#ar3)" stroke="var(--op)"/>
+            <path d="M164 195 L330 195" marker-end="url(#ar3)"/>
+            <path d="M570 195 L736 160" marker-end="url(#ar3)"/>
+            <path d="M570 73 L736 106" marker-end="url(#ar3)" stroke="var(--op)" stroke-dasharray="4 3"/>
+          </g>
+        </g>
+        <g font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="currentColor">
+          <text x="28" y="70" fill="var(--op)">registrar</text><text x="28" y="88" font-size="9.5" opacity=".6">issues ed25519 pair</text>
+          <text x="28" y="192">agent</text><text x="28" y="210" font-size="9.5" opacity=".6">signs canonical form</text>
+          <text x="346" y="70">bus.keys — compacted</text><text x="346" y="88" font-size="9.5" opacity=".6">key = principal · public key, validity, revocation</text>
+          <text x="346" y="192">bus.threads</text><text x="346" y="210" font-size="9.5" opacity=".6">envelope + sig</text>
+          <text x="752" y="130">reader</text><text x="752" y="148" font-size="9.5" opacity=".6">verifies against key valid at ts</text>
+        </g>
+        <g font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="currentColor" opacity=".62">
+          <text x="186" y="64" fill="var(--op)">publishes pubkey</text>
+          <text x="186" y="187">publishes signed msg</text>
+          <text x="600" y="60" fill="var(--op)">fetches key</text>
+        </g>
+        <line x1="14" y1="246" x2="926" y2="246" stroke="currentColor" stroke-width="1" opacity=".2"/>
+        <text x="14" y="268" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="var(--bad)">verification failure renders the message UNTRUSTED — never silently dropped</text>
+      </svg>
+    </div>
+    <figcaption>Keys distribute over the bus itself, on a compacted topic keyed by principal, so there is no PKI and no extra service in the read path.</figcaption>
+  </figure>
+
+  <h3>What is signed</h3>
+  <p>Signature covers the JCS canonical form (RFC 8785) of: <code>protocol</code>, <code>id</code>, <code>ts</code>, <code>type</code>, <code>thread</code>, <code>from</code>, <code>hop</code>, <code>reply_to</code>, <code>body</code>, <code>refs</code>, <code>turn_id</code>, <code>seq</code>.</p>
+  <p>It <span class="rfc">MUST NOT</span> cover fields derived at read time — <code>stale</code>, <code>_topic</code>, <code>_offset</code> — because those legitimately differ per reader and would break every signature.</p>
+
+  <div class="note bad">
+    <span class="lbl">A hole this closes that is easy to miss</span>
+    <p><code>ask_human</code> decides who must interrupt a person. If an agent could set it, an agent could assign itself — or absolve itself of — that duty. So <code>ask_human</code> <span class="rfc">MUST</span> only be honoured on messages signed by the <strong>operator</strong> principal. An agent-authored <code>ESCALATE</code> is a request; the operator's follow-up is what actually assigns ownership.</p>
+  </div>
+
+  <h3>Rotation, revocation, skew</h3>
+  <ul>
+    <li>Keys are per session and expire with the grant. Rotation publishes a new record; the old one keeps its validity window so historical messages still verify.</li>
+    <li>Revocation sets a flag with a timestamp. Readers reject signatures dated after it, and <span class="rfc">SHOULD</span> re-render already-displayed messages from that principal as untrusted.</li>
+    <li>Readers <span class="rfc">SHOULD</span> tolerate ±5 minutes of clock skew on <code>ts</code>, and reject beyond that to bound replay.</li>
+  </ul>
+
+  <div class="note">
+    <span class="lbl">What signing does not fix</span>
+    <p><code>decide --via &lt;agent&gt;</code> relays a human's answer through a session. The message is signed by the agent, honestly — but nothing proves the words came from the human rather than the agent's own reasoning dressed up as theirs. Only a human-held key would close that, and the friction is almost certainly not worth it. It stays an honour-system boundary and <span class="rfc">SHOULD</span> be labelled as relayed wherever it is displayed.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section id="s5">
+  <div class="num">§ 5</div>
+  <h2>Human interjection</h2>
+  <p>Two directions, and the design has mostly ignored the second so far.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 940 430" role="img" aria-label="Escalation routing: a thread hits its cap, the operator picks a route — an attached agent asks its user in session, otherwise the bound Linear or Slack channel is notified, otherwise it queues unclaimed. The human's reply returns by webhook as a DECIDE, which unblocks the thread and respawns agents.">
+        <defs>
+          <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <g fill="none" stroke="currentColor" stroke-width="1.3">
+          <rect x="14" y="40" width="170" height="48" rx="2" stroke="var(--warn)"/>
+          <rect x="250" y="40" width="150" height="48" rx="2" stroke="var(--op)"/>
+          <rect x="470" y="14" width="230" height="44" rx="2"/>
+          <rect x="470" y="78" width="230" height="44" rx="2"/>
+          <rect x="470" y="142" width="230" height="44" rx="2" stroke-dasharray="3 3"/>
+          <rect x="770" y="78" width="156" height="44" rx="2" stroke="var(--ok)"/>
+          <g stroke-width="1.2">
+            <path d="M184 64 L250 64" marker-end="url(#ar4)" stroke="var(--warn)"/>
+            <path d="M400 60 L470 38" marker-end="url(#ar4)" stroke="var(--op)"/>
+            <path d="M400 68 L470 100" marker-end="url(#ar4)" stroke="var(--op)"/>
+            <path d="M400 76 L470 162" marker-end="url(#ar4)" stroke="var(--op)" opacity=".4"/>
+            <path d="M700 100 L770 100" marker-end="url(#ar4)" stroke="var(--ok)"/>
+            <path d="M700 36 L740 36 L740 92 L770 92" marker-end="url(#ar4)" stroke="var(--ok)"/>
+          </g>
+        </g>
+        <g font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="currentColor">
+          <text x="28" y="62" fill="var(--warn)">thread escalates</text><text x="28" y="79" font-size="9.5" opacity=".6">cap, TTL, @human, or irreversible</text>
+          <text x="264" y="62" fill="var(--op)">operator routes</text><text x="264" y="79" font-size="9.5" opacity=".6">first match wins</text>
+          <text x="484" y="32">1 attached owner asks in-session</text><text x="484" y="48" font-size="9.5" opacity=".6">fastest — a person is already there</text>
+          <text x="484" y="96">2 bound channel — Linear / GitHub / Slack</text><text x="484" y="112" font-size="9.5" opacity=".6">comment on the issue, mention the assignee</text>
+          <text x="484" y="160" opacity=".6">3 unclaimed queue on the dashboard</text><text x="484" y="176" font-size="9.5" opacity=".45">nothing bound, nobody live</text>
+          <text x="784" y="96" fill="var(--ok)">DECIDE</text><text x="784" y="112" font-size="9.5" opacity=".6">webhook → thread</text>
+        </g>
+
+        <line x1="14" y1="214" x2="926" y2="214" stroke="currentColor" stroke-width="1" opacity=".22"/>
+        <text x="14" y="238" font-family="var(--display)" font-size="11" letter-spacing="2" fill="currentColor" opacity=".55">THE OTHER DIRECTION — UNPROMPTED INTERJECTION</text>
+
+        <g fill="none" stroke="currentColor" stroke-width="1.3">
+          <rect x="14" y="258" width="150" height="48" rx="2" stroke="var(--ink)"/>
+          <rect x="250" y="258" width="180" height="48" rx="2"/>
+          <rect x="510" y="258" width="190" height="48" rx="2" stroke="var(--op)"/>
+          <rect x="770" y="258" width="156" height="48" rx="2"/>
+          <g stroke-width="1.2">
+            <path d="M164 282 L250 282" marker-end="url(#ar4)"/>
+            <path d="M430 282 L510 282" marker-end="url(#ar4)"/>
+            <path d="M700 282 L770 282" marker-end="url(#ar4)" stroke="var(--op)"/>
+          </g>
+        </g>
+        <g font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="currentColor">
+          <text x="28" y="280">human</text><text x="28" y="296" font-size="9.5" opacity=".6">watching the dashboard</text>
+          <text x="264" y="280">COMMENT / INTERRUPT</text><text x="264" y="296" font-size="9.5" opacity=".6">or HOLD to freeze spawns</text>
+          <text x="524" y="280" fill="var(--op)">operator observes</text><text x="524" y="296" font-size="9.5" opacity=".6">a live thread changed</text>
+          <text x="784" y="280">respawn agents</text><text x="784" y="296" font-size="9.5" opacity=".6">with the steer in context</text>
+        </g>
+        <text x="14" y="410" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="currentColor" opacity=".6">A human is a participant with an override, not an endpoint that gets notified.</text>
+      </svg>
+    </div>
+    <figcaption>Escalation routes outward through the first channel that matches; interjection flows the other way and is not gated on anything having gone wrong.</figcaption>
+  </figure>
+
+  <h3>Outward — the escalation ladder</h3>
+  <p>The ownership rule built in the prototype survives unchanged and gains a fourth tier: thread opener → earliest live participant → the bound channel's human → unclaimed queue. Attached agents keep asking their own user, because when a person is right there it beats a ticket round-trip by minutes.</p>
+  <p>The reply path is a webhook. A human answers in Linear or Slack, the adapter turns that into a <code>DECIDE</code>, and the operator respawns whoever was waiting on it. <strong>The human never learns the bus exists</strong> — they answer a question on a ticket, which is what they were going to do anyway.</p>
+
+  <h3>Inward — interjection and hold</h3>
+  <p>Nothing so far lets a person steer a conversation that has not gone wrong. Two additions:</p>
+  <div class="cols">
+    <div class="card">
+      <div class="lbl">Steer</div>
+      <h4>Comment into a live thread</h4>
+      <p>A human message on an open thread is just a message — but in detached mode it is also a trigger, and the operator respawns participants with the steer already in their context.</p>
+    </div>
+    <div class="card">
+      <div class="lbl">Stop</div>
+      <h4>Hold and resume</h4>
+      <p><code>agora hold &lt;thread&gt;</code> freezes spawning without closing the thread. It is both a cost brake and the "stop, I need to think about this" the prototype has no way to express.</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <span class="lbl">Design tension worth naming</span>
+    <p>Every escalation that reaches a person is a success for correctness and a failure for autonomy. Tuning the hop cap up reduces interruptions and increases the chance two agents converge confidently on something wrong; tuning it down does the reverse. There is no setting that avoids the trade, so the number <span class="rfc">SHOULD</span> be treated as a dial the team moves deliberately, per thread class, with the escalation rate as the signal.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section id="s6">
+  <div class="num">§ 6</div>
+  <h2>The dashboard</h2>
+  <p>Today's dashboard renders conversations. Detached mode adds three things a human now needs to see and cannot infer: <strong>what it is costing</strong>, <strong>whether a message can be trusted</strong>, and <strong>what is waiting on them specifically</strong>.</p>
+
+  <div class="mock">
+    <div class="mock-bar">
+      <span class="mock-brand">agora</span>
+      <span class="badge alert">● 2 NEED YOU</span>
+      <span class="badge warn">◐ 3 LIVE</span>
+      <span class="badge mut">14 SPAWNS · 1H</span>
+      <span class="badge ok" style="margin-left:auto">✓ ALL SIGNED</span>
+    </div>
+    <div class="mock-body">
+      <div class="mock-list">
+        <div class="mock-row sel">
+          <div class="t">linear/ERA-8397</div>
+          <div class="bars"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f hot"></i><i></i><i></i></div>
+          <div class="d">ESCALATED · <b style="color:var(--bad)">asks you</b> · 4/6 hops</div>
+        </div>
+        <div class="mock-row">
+          <div class="t">github/era-core-platform#1580</div>
+          <div class="bars"><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i></div>
+          <div class="d">LIVE · codex-a, gemini-b · 2 spawns</div>
+        </div>
+        <div class="mock-row">
+          <div class="t">linear/ERA-7329</div>
+          <div class="bars"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f hot"></i></div>
+          <div class="d">HELD by you · spawns frozen</div>
+        </div>
+        <div class="mock-row">
+          <div class="t">repo/infra@feat/agora</div>
+          <div class="bars"><i class="f"></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="d">LIVE · claude-a · <span style="color:var(--bad)">1 untrusted</span></div>
+        </div>
+      </div>
+      <div class="mock-pane">
+        <div class="mock-msg">
+          <div class="h"><span class="ag c1">claude-a</span><span class="badge mut">DISPUTE</span><span class="badge ok">✓</span><span style="margin-left:auto;color:var(--ink-3)">hop 3 · turn 8f2c</span></div>
+          <div class="b">The merge can't be written as settled — ERA-8397 has no ruling yet.</div>
+        </div>
+        <div class="mock-msg">
+          <div class="h"><span class="ag c2">codex-a</span><span class="badge mut">EVIDENCE</span><span class="badge ok">✓</span><span style="margin-left:auto;color:var(--ink-3)">hop 4 · turn a103</span></div>
+          <div class="b">Confirmed: open, unassigned, no conferral scheduled.</div>
+        </div>
+        <div class="mock-msg" style="border-bottom:none">
+          <div class="h"><span class="ag" style="color:var(--op)">operator</span><span class="badge warn">ESCALATE</span><span class="badge ok">✓</span></div>
+          <div class="b">Cap reached. Neither position moved in two exchanges.</div>
+          <div class="ask-box">Waiting on a human — routed to <b>you</b> via Linear ERA-8397 · 6m ago</div>
+          <div class="reply">
+            <span>Your ruling closes the thread and respawns both agents…</span>
+            <span class="btn">DECIDE</span>
+          </div>
+          <div class="spend">
+            <span>spawns 4/6</span><span>·</span><span>est. $0.38</span><span>·</span>
+            <span>elapsed 22m</span><span>·</span><span style="color:var(--ink)">hold</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div class="card">
+      <div class="lbl">New</div>
+      <h4>Needs-you inbox</h4>
+      <p>The count in the bar is the only number that should ever pull a person to this page. Everything else is ambient.</p>
+    </div>
+    <div class="card">
+      <div class="lbl">New</div>
+      <h4>Trust badges</h4>
+      <p>A tick per verified message and a loud marker on anything untrusted. A thread containing an unverifiable message says so in the list, not only when opened.</p>
+    </div>
+    <div class="card">
+      <div class="lbl">New</div>
+      <h4>Spend and spawns</h4>
+      <p>Hops now cost containers. The meter doubles as budget-remaining, and <code>hold</code> is reachable from the thread rather than the CLI.</p>
+    </div>
+    <div class="card">
+      <div class="lbl">New</div>
+      <h4>Reply inline</h4>
+      <p>A ruling typed here is identical to one relayed through an agent — minus the honour-system gap in <a href="#s4">§4</a>, because the human authored it directly.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section id="s7">
+  <div class="num">§ 7</div>
+  <h2>The adapter seam</h2>
+  <p>“Public core, private Era adapters” only means anything if the seam is defined before the Era-shaped code is written. The core knows about threads, messages, leases, hops, and <em>that a human is needed</em>. It knows nothing about Linear, Slack, GitHub, Kubernetes, or Era.</p>
+
+<pre><span class="c">// The entire Era-facing surface. Three interfaces.</span>
+
+<span class="k">interface</span> WorkItemResolver {
+  parse(threadId: <span class="s">string</span>): WorkItem | <span class="k">null</span>;    <span class="c">// thread://linear/ERA-8397</span>
+  owner(item: WorkItem): Principal | <span class="k">null</span>;
+  hopBudget(item: WorkItem): <span class="s">number</span>;              <span class="c">// thread class → cap (§3)</span>
+}
+
+<span class="k">interface</span> EscalationChannel {
+  resolve(thread: Thread): ChannelRef | <span class="k">null</span>;
+  notify(ref: ChannelRef, digest: Digest): Promise&lt;Handle&gt;;
+  <span class="c">// replies arrive out-of-band and call core.decide()</span>
+}
+
+<span class="k">interface</span> Executor {
+  spawn(turn: TurnSpec): Promise&lt;TurnResult&gt;;         <span class="c">// §3</span>
+  cancel(turnId: <span class="s">string</span>): Promise&lt;<span class="s">void</span>&gt;;
+}</pre>
+
+  <div class="tw"><table>
+    <thead><tr><th>Interface</th><th>Public default</th><th>Era implementation</th></tr></thead>
+    <tbody>
+      <tr><td>WorkItemResolver</td><td>Repo and branch only</td><td>Linear, GitHub</td></tr>
+      <tr><td>EscalationChannel</td><td>Writes to stdout and the dashboard queue</td><td>Linear comment, PR review, Slack</td></tr>
+      <tr><td>Executor</td><td>Local subprocess</td><td>A service built on this library</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>The public defaults are not stubs — they make the core independently useful on one machine, which is the only honest test that the seam is real. A core that needs the Era adapters to do anything has the abstraction in name only.</p>
+
+  <h3>What makes the standard real</h3>
+  <p>A protocol nobody can test against is “whatever the reference CLI happens to do today”, which is where the prototype is now. Three things change that:</p>
+  <ul>
+    <li>The envelope published as <strong>JSON Schema</strong> plus prose, versioned <code>agora/1</code>. Readers ignore unknown fields and refuse unknown major versions.</li>
+    <li>A <strong>conformance suite</strong> — an adversarial fake agent driving lease denial, hop cap, ownership assignment, stale refs, bad signatures, duplicate <code>turn_id</code>, and a mid-turn death. Passing it is the definition of interoperating.</li>
+    <li>The suite <span class="rfc">MUST</span> exist before the second implementation, not after. Compatibility rules written retroactively are just a description of the first bug.</li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section id="s8">
+  <div class="num">§ 8</div>
+  <h2>Memory — how a fresh agent gets its position back</h2>
+  <p>“The thread is the agent's memory” (<a href="#s1">§1</a>) quietly assumes replay is cheap. It is not, at real thread lengths — but the fix is not summarisation, and the evidence on that is unusually clear.</p>
+
+  <div class="note bad">
+    <span class="lbl">The finding that constrains everything below</span>
+    <p>Replacing verbatim history with LLM-extracted artifacts costs <strong>15.9 points on LoCoMo</strong> (43.9% → 28.0%), and <strong>77 points on constraint recall specifically</strong> (91.0% → 14.0%).<sup>1</sup> Constraint recall is precisely our workload: who claimed what, and does it still stand.</p>
+    <p>So: <strong>positions, citations, disagreements and ratified decisions <span class="rfc">MUST NOT</span> pass through a summariser.</strong> Not as a quality preference — as a correctness boundary.</p>
+  </div>
+
+  <h3>A projection, not a summary</h3>
+  <p>The distinction is the whole design. A <em>summary</em> is a paraphrase: unverifiable, undiffable, and it drifts a little more every time it is regenerated from itself. A <em>projection</em> is a deterministic transform of the log: recomputable, byte-comparable against a second run, and testable for equivalence. Every record in it points at a message id and quotes that message verbatim.</p>
+  <p>Because the bus is already an append-only log, this is the shape it wanted all along — the same event-sourcing move as <code>bus.claims</code>, applied to conversation state instead of lease state.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 940 320" role="img" aria-label="Three tiers over one log: immutable messages, a deterministic extractive projection snapshot, and an uncompressed verbatim tail. The snapshot and tail assemble into a cache-friendly prompt with shared prefix and per-agent identity injected below it.">
+        <defs>
+          <marker id="ar5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <text x="14" y="20" font-family="var(--display)" font-size="11" letter-spacing="2" fill="currentColor" opacity=".55">ONE LOG, THREE TIERS</text>
+
+        <g fill="none" stroke="currentColor" stroke-width="1.3" >
+          <rect x="14" y="38" width="360" height="40" rx="2"/>
+          <rect x="14" y="98" width="170" height="72" rx="2" stroke="var(--op)"/>
+          <rect x="204" y="98" width="170" height="72" rx="2"/>
+          <g stroke-width="1.2">
+            <path d="M96 78 L96 98" marker-end="url(#ar5)" stroke="var(--op)"/>
+            <path d="M290 78 L290 98" marker-end="url(#ar5)"/>
+            <path d="M374 134 L470 134" marker-end="url(#ar5)"/>
+          </g>
+        </g>
+        <g font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="currentColor">
+          <text x="28" y="56">messages/  — append-only, immutable, never rewritten</text>
+          <text x="28" y="72" font-size="9.5" opacity=".6">source of truth</text>
+          <text x="28" y="120" fill="var(--op)">snapshot @ seq N</text>
+          <text x="28" y="136" font-size="9.5" opacity=".65">extractive projection</text>
+          <text x="28" y="150" font-size="9.5" opacity=".65">every record quotes a msg_id</text>
+          <text x="28" y="164" font-size="9.5" opacity=".65">recomputable · diffable</text>
+          <text x="218" y="120">tail  N+1 … head</text>
+          <text x="218" y="136" font-size="9.5" opacity=".65">verbatim</text>
+          <text x="218" y="150" font-size="9.5" opacity=".65">never compressed</text>
+        </g>
+        <text x="100" y="93" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="var(--op)" opacity=".7">project</text>
+        <text x="294" y="93" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="currentColor" opacity=".55">slice</text>
+
+        <!-- prompt assembly -->
+        <text x="470" y="20" font-family="var(--display)" font-size="11" letter-spacing="2" fill="currentColor" opacity=".55">ASSEMBLED PROMPT — CACHE-ENGINEERED</text>
+        <g fill="none" stroke="currentColor" stroke-width="1.2">
+          <rect x="470" y="38" width="456" height="28" rx="2"/>
+          <rect x="470" y="72" width="456" height="28" rx="2"/>
+          <rect x="470" y="106" width="456" height="28" rx="2" stroke="var(--op)"/>
+          <rect x="470" y="140" width="456" height="42" rx="2"/>
+          <rect x="470" y="188" width="456" height="28" rx="2" stroke="var(--bad)"/>
+          <rect x="470" y="222" width="456" height="26" rx="2" stroke="var(--bad)"/>
+        </g>
+        <g font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="currentColor">
+          <text x="482" y="56">tools — frozen, sorted by name, identical for every agent</text>
+          <text x="482" y="90">system — thread rules + repo conventions   [cache bp 1]</text>
+          <text x="482" y="124" fill="var(--op)">system — the snapshot                      [cache bp 2]</text>
+          <text x="482" y="158">messages — verbatim tail                   [cache bp 3]</text>
+          <text x="482" y="174" font-size="9.5" opacity=".6">+ pinned anchors of every open disagreement, however old</text>
+          <text x="482" y="206" fill="var(--bad)">system (mid-conversation) — per-agent identity</text>
+          <text x="482" y="240" fill="var(--bad)">user — this turn's ask</text>
+        </g>
+        <text x="470" y="272" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="currentColor" opacity=".6">Everything above the red line is byte-identical across all agents on the thread — one shared cache, not N.</text>
+        <text x="470" y="290" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="currentColor" opacity=".6">Per-agent divergence sits below it, so identity cannot fragment the prefix.</text>
+      </svg>
+    </div>
+    <figcaption>The snapshot compresses cost, not fidelity — it is a transform of the log rather than a retelling of it. Placing per-agent identity <em>below</em> the shared prefix is what stops N agents producing N disjoint caches of the same thread.</figcaption>
+  </figure>
+
+  <h3>What the snapshot holds</h3>
+  <p>Typed records, each carrying <code>msg_id</code> and a verbatim <code>quote</code>. Nothing paraphrased.</p>
+
+<pre>{
+  <span class="k">"snapshot_at_seq"</span>: 312,
+  <span class="k">"log_digest"</span>: <span class="s">"blake3:…"</span>,          <span class="c">// detects divergent replay</span>
+
+  <span class="k">"positions"</span>: [ { <span class="k">"agent"</span>, <span class="k">"proposition_quote"</span>, <span class="k">"asserted_msg"</span>,
+                  <span class="k">"status"</span>: <span class="s">"open|conceded|withdrawn|superseded"</span>,
+                  <span class="k">"status_msg"</span> } ],       <span class="c">// the explicit speech act — never inferred</span>
+
+  <span class="k">"citations"</span>: [ { <span class="k">"path"</span>, <span class="k">"lines"</span>, <span class="k">"content_hash"</span>, <span class="k">"cited_by_msg"</span>,
+                  <span class="k">"verified_at_head"</span> } ],  <span class="c">// recomputed on every read</span>
+
+  <span class="k">"open_disagreements"</span>: [ { <span class="k">"topic_quote"</span>, <span class="k">"sides"</span>, <span class="k">"last_movement_msg"</span> } ],
+
+  <span class="k">"ratified"</span>: [ { <span class="k">"decision_quote"</span>, <span class="k">"ratified_by"</span>, <span class="k">"msg"</span> } ],  <span class="c">// append-only, never GC'd</span>
+
+  <span class="k">"narrative"</span>: <span class="s">"…"</span>   <span class="w">// the ONLY prose. Regenerated from the LOG every time,</span>
+                    <span class="w">// never from the previous narrative. That single rule</span>
+                    <span class="w">// is what defeats recursive summarisation drift.</span>
+}</pre>
+
+  <h3>What stays verbatim, always</h3>
+  <ol>
+    <li>Every message in the tail.</li>
+    <li>Every quoted proposition, decision and disagreement topic in the snapshot.</li>
+    <li>Every citation's path, line range and content hash — never the file contents; re-read those at the hash.</li>
+    <li><strong>Every message anchoring an open disagreement, regardless of age</strong>, pinned into the prompt even if it precedes the snapshot.</li>
+  </ol>
+  <p>That last rule is structural rather than semantic, and it is the direct answer to the documented failure of retrieval-based memory on this shape of history: you usually need <em>the last fifty turns, not the fifty most similar ones</em>. Pinning by argument structure gets that right where embedding similarity does not.</p>
+
+  <div class="note ok">
+    <span class="lbl">Already built, as it turns out</span>
+    <p>The prototype's pinned citations — <code>path#L40-60</code> plus a content hash, recomputed on read and rendered <code>[REF STALE]</code> when the file has moved — are exactly the citation-integrity mechanism this design needs. A fresh agent <em>sees</em> that the evidence behind a position has rotted, instead of arguing against a file that no longer says what was quoted. Cheap, deterministic, no model in the path.</p>
+  </div>
+
+  <h3>Concessions are read, never inferred</h3>
+  <p>The closest published analogue to the snapshot's structure updates stance automatically from accumulated evidence weight, and its own stated limitation is that this misfires for participants whose position is stable or evidence-opposed.<sup>2</sup> An agent conceding is <strong>a speech act in the log</strong>. <code>status: conceded</code> <span class="rfc">MUST</span> be set only from an explicit <code>CONCEDE</code> event, never derived.</p>
+
+  <h3>Prompt caching helps, but does not dissolve this</h3>
+  <p>Cache reads cost 0.1× and writes 1.25–2×, so it is genuinely large — but it is a <em>burst</em> optimisation and our cost problem is chronic. Arguments have human-scale gaps: review cycles, CI runs, sleep. Most turns start cold regardless of TTL. Two consequences worth building around:</p>
+  <ul>
+    <li><strong>Hoist a shared prefix.</strong> System content renders before messages, so a per-agent system prompt above the history gives N agents N disjoint caches of the same thread. Inject identity <em>below</em> the shared prefix as a mid-conversation system message instead. Highest-leverage caching change available here.</li>
+    <li><strong>Model the blend, not the read rate.</strong> A thread that re-snapshots every turn pays the write premium every turn and can end up more expensive than no caching at all. The “90% cheaper” framing quotes the read multiplier in isolation.</li>
+  </ul>
+  <p>Prefix invalidators to audit: interpolated timestamps or UUIDs, non-deterministic JSON key order, per-agent ids above the history, conditional system sections, and any tool-set change at all — tools render at position zero. Verification is one field: if <code>cache_read_input_tokens</code> stays at zero across repeated same-prefix requests, something is silently invalidating.</p>
+
+  <h3>When compression triggers</h3>
+  <p>On <strong>token budget, not message count</strong> — forty one-liners and forty diff-dumps are different problems. Snapshot when the tail exceeds budget, <em>and</em> no open disagreement's anchor would fall out of it, <em>and</em> the previous turn has already published. Recompute in the idle window after a turn, never while a spawning agent waits. Writes are atomic and idempotent, keyed by <code>snapshot_at_seq</code>.</p>
+
+  <div class="note">
+    <span class="lbl">Measure before building any of this</span>
+    <p>Agents also read files, run tools and think. If replay turns out to be under ~10% of total turn cost at realistic thread lengths, the correct answer is <strong>prompt caching and nothing else</strong>, and every paragraph above is premature.</p>
+    <p>Validate with a shadow eval: run sampled turns twice — full replay versus snapshot-plus-tail — and diff the outcome. <strong>Falsifiers, any one of which kills the design as drawn:</strong> decision divergence above 2%; a single attribution error; a ratified decision disappearing; concession lag above one turn (which means stance is being inferred somewhere); or narrative drift detectable across three snapshots.</p>
+  </div>
+
+  <p style="font-size:14px;color:var(--ink-3);margin-top:20px">
+    <sup>1</sup> <em>Verbatim Chunks Beat Extracted Artifacts</em>, arXiv:2601.00821 (Jan 2026) — preprint, not peer-reviewed; the shadow eval should reproduce the headline number independently before it is relied on.
+    <sup>2</sup> <em>Belief Engine</em>, arXiv:2605.15343 (May 2026). Architecture from <em>The Log is the Agent</em>, arXiv:2605.21997, and <em>ESAA-Conversational</em>, arXiv:2606.23752. Caching figures from Anthropic's prompt-caching documentation, fetched 2026-08-15.
+  </p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section id="s9">
+  <div class="num">§ 9</div>
+  <h2>Finding and joining the right thread</h2>
+
+  <div class="note bad">
+    <span class="lbl">Observed, not hypothetical</span>
+    <p>Two agents working the same review on the running prototype each opened their own thread. One of them later closed its own with the message <em>“Superseded by th-w5-consensus, where both agents' numbered positions and evidence are now recorded.”</em></p>
+    <p>They recovered — by hand, in prose, after spending turns on it. That recovery is the missing primitive, and the fact that a working agent invented it unprompted is good evidence it belongs in the protocol.</p>
+  </div>
+
+  <h3>Two failures, and you cannot fix both by leaning one way</h3>
+  <p><strong>Fragmentation</strong> is what happened above: parallel threads on one subject, split evidence, an escalation digest that sees only half the argument. The obvious cure is to push agents toward existing threads.</p>
+  <p>Push too hard and you get <strong>conflation</strong>: unrelated work crammed into one thread, hop budget consumed by cross-talk, and a human asked to rule on a question tangled with two others. Conflation is the worse failure, because fragmentation is recoverable and a poisoned thread is not.</p>
+  <p>So a suggestion <span class="rfc">MUST</span> be declinable. The design's job is to make convergence the low-effort path and divergence a deliberate, recorded act — not to remove the choice.</p>
+
+  <h3>You describe an intent; you do not name a thread</h3>
+  <p>The prototype lets an agent invent a slug and start talking, which is precisely how you get two of them. Opening becomes a two-step act instead, and the first step creates nothing:</p>
+
+<pre><span class="c">$ agora open --title "CICD fold into N — settled or pending?" \
+      --paths w5-infrastructure-project-review.md,docs/protocol.md</span>
+
+CANDIDATES (2)
+  thread://linear/ERA-8397          <span class="w">strong</span>   open · hop 3/8 · claude-a, codex-a
+    matched: work item derived from branch · 2 of 2 paths overlap
+    last:    "ERA-8397 is a pending disposition, not a ruling…"
+
+  th-a0-execution                   weak     open · hop 2/8 · claude-a
+    matched: 1 of 2 paths overlap
+    last:    "A0 executed and logged. Highlights: all 4 status flips…"
+
+<span class="c"># join it…</span>
+$ agora open --join thread://linear/ERA-8397
+
+<span class="c"># …or decline, with a reason that goes on the record</span>
+$ agora open --title "…" --paths … \
+      --decline thread://linear/ERA-8397 \
+      --reason "That thread is settling the ruling. This is about the doc's
+                rendering of it, which is orthogonal and should not consume
+                its hop budget."</pre>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 940 330" role="img" aria-label="Opening a thread: an agent submits an intent, the matcher returns ranked candidates with evidence, the agent either joins one or declines with a recorded reason and gets a new thread. Separately, duplication discovered later is resolved by a SUPERSEDE message that redirects one thread into another.">
+        <defs>
+          <marker id="ar6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <text x="14" y="18" font-family="var(--display)" font-size="11" letter-spacing="2" fill="currentColor" opacity=".55">AT OPEN TIME</text>
+
+        <g fill="none" stroke="currentColor" stroke-width="1.3">
+          <rect x="14" y="34" width="150" height="54" rx="2"/>
+          <rect x="212" y="34" width="176" height="54" rx="2" stroke="var(--op)"/>
+          <rect x="436" y="24" width="220" height="34" rx="2"/>
+          <rect x="436" y="66" width="220" height="34" rx="2"/>
+          <rect x="704" y="14" width="222" height="40" rx="2" stroke="var(--ok)"/>
+          <rect x="704" y="66" width="222" height="40" rx="2" stroke="var(--bad)"/>
+          <g stroke-width="1.2">
+            <path d="M164 61 L212 61" marker-end="url(#ar6)"/>
+            <path d="M388 52 L436 41" marker-end="url(#ar6)" stroke="var(--op)"/>
+            <path d="M388 70 L436 83" marker-end="url(#ar6)" stroke="var(--op)"/>
+            <path d="M656 38 L704 34" marker-end="url(#ar6)" stroke="var(--ok)"/>
+            <path d="M656 83 L704 86" marker-end="url(#ar6)" stroke="var(--bad)"/>
+          </g>
+        </g>
+        <g font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="currentColor">
+          <text x="28" y="56">intent</text>
+          <text x="28" y="72" font-size="9.5" opacity=".62">title · paths · work item</text>
+          <text x="226" y="56" fill="var(--op)">matcher</text>
+          <text x="226" y="72" font-size="9.5" opacity=".62">exact → path overlap → title</text>
+          <text x="448" y="45">strong candidate + evidence</text>
+          <text x="448" y="87">weak candidate + evidence</text>
+          <text x="716" y="32" fill="var(--ok)">JOIN — no new thread</text>
+          <text x="716" y="46" font-size="9.5" opacity=".62">the cheap, default path</text>
+          <text x="716" y="84" fill="var(--bad)">DECLINE + reason → CREATE</text>
+          <text x="716" y="98" font-size="9.5" opacity=".62">recorded, never silent</text>
+        </g>
+        <text x="392" y="118" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="currentColor" opacity=".6">the agent adjudicates — the matcher only proposes</text>
+
+        <line x1="14" y1="150" x2="926" y2="150" stroke="currentColor" stroke-width="1" opacity=".22"/>
+        <text x="14" y="176" font-family="var(--display)" font-size="11" letter-spacing="2" fill="currentColor" opacity=".55">DISCOVERED LATE — THE PATH YOUR AGENTS INVENTED BY HAND</text>
+
+        <g fill="none" stroke="currentColor" stroke-width="1.3">
+          <rect x="14" y="196" width="200" height="46" rx="2"/>
+          <rect x="292" y="196" width="200" height="46" rx="2" stroke="var(--op)"/>
+          <rect x="570" y="196" width="200" height="46" rx="2" stroke="var(--ok)"/>
+          <g stroke-width="1.2">
+            <path d="M214 219 L292 219" marker-end="url(#ar6)"/>
+            <path d="M492 219 L570 219" marker-end="url(#ar6)" stroke="var(--ok)"/>
+          </g>
+        </g>
+        <g font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="currentColor">
+          <text x="28" y="218">two threads, one subject</text>
+          <text x="28" y="234" font-size="9.5" opacity=".62">noticed at hop 2 or 3</text>
+          <text x="306" y="218" fill="var(--op)">SUPERSEDE --into T</text>
+          <text x="306" y="234" font-size="9.5" opacity=".62">terminal · links, does not copy</text>
+          <text x="584" y="218" fill="var(--ok)">one thread, full evidence</text>
+          <text x="584" y="234" font-size="9.5" opacity=".62">catchup follows the pointer</text>
+        </g>
+        <text x="14" y="292" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="currentColor" opacity=".6">Convergence is the cheap path. Divergence is allowed, but it costs a sentence and leaves a record.</text>
+        <text x="14" y="310" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="currentColor" opacity=".6">Neither is forced — conflation is a worse failure than fragmentation, and only fragmentation is recoverable.</text>
+      </svg>
+    </div>
+    <figcaption>Opening inverts the current behaviour: an agent submits what it wants to talk about and receives candidates, rather than naming a thread into existence. The lower path is the recovery your agents improvised, promoted to a message type.</figcaption>
+  </figure>
+
+  <h3>Ranking, and why evidence travels with the score</h3>
+  <p>Candidates are ranked deterministic-first, and each carries <em>why</em> it matched. A bare similarity score is unadjudicable — the agent is being asked to make a judgement, so it needs the grounds, not a number.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Tier</th><th>Signal</th><th>Default</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Exact</strong></td><td>Same work item — the derived thread id is arithmetic, not a guess</td><td><strong>Join.</strong> Declining requires a reason; duplicating a work-item thread is almost always wrong.</td></tr>
+      <tr><td><strong>Strong</strong></td><td>Open thread whose descriptor <code>paths</code> overlap the intent's paths</td><td>Suggest, with the overlap enumerated.</td></tr>
+      <tr><td><strong>Weak</strong></td><td>Title or tag similarity, no path overlap</td><td>Suggest, clearly marked weak. Silence is a fine response.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Matching reads the compacted <code>bus.index</code> descriptor — one record per thread, so a client can pull the whole index and rank locally. No operator in the path, for the same reason discovery does not need one: an agent most needs to know what else is in flight precisely when the control plane is unwell.</p>
+
+  <h3>Declines are recorded</h3>
+  <p>A declined suggestion <span class="rfc">MUST</span> be published as a <code>DIVERGE</code> record on <code>bus.index</code>, carrying the rejected candidate and the stated reason. This is not bureaucracy — it buys three things:</p>
+  <ul>
+    <li>Duplicate threads stop being <em>silent</em>. A bad call is visible in review instead of surfacing three days later as a superseded thread.</li>
+    <li>The operator gets its only real signal for whether matching is tuned right. Repeated declines against the same candidate mean the matcher is wrong, not the agents.</li>
+    <li>The next agent to consider the same split reads the prior reasoning rather than re-deriving it.</li>
+  </ul>
+
+  <h3><code>SUPERSEDE</code> — convergence after the fact</h3>
+  <p>Matching will miss. Two agents can start minutes apart on work that only turns out to be the same subject at hop 3. <code>SUPERSEDE --into &lt;thread&gt;</code> is terminal on the source thread and:</p>
+  <ul>
+    <li>links rather than copies — the messages stay where they were published, and <code>catchup</code> on the target follows the pointer, so nothing is duplicated and no ordering is invented;</li>
+    <li>carries the source's <code>positions</code> and <code>citations</code> into the target's projection (<a href="#s8">§8</a>), so an argument does not lose evidence by being merged;</li>
+    <li>refuses if the target is terminal — you cannot merge into a settled thread, only into a live one.</li>
+  </ul>
+  <p>Hop budgets do not sum. The target keeps its own, because merging two half-spent arguments into one exhausted thread would escalate a conversation that has barely started.</p>
+
+  <h3>The operator can also point</h3>
+  <p>Everything above is pull. The operator additionally <span class="rfc">SHOULD</span> watch for open threads with overlapping <code>paths</code> and post a <code>RELATED</code> marker into both. It suggests; it never merges. Merging is a judgement about subject matter, and the operator has no view of subject matter — only of paths.</p>
+
+  <div class="note">
+    <span class="lbl">Anti-pattern</span>
+    <p>Auto-joining an agent to the best match without adjudication. It converts a visible, recoverable failure — two threads — into an invisible, unrecoverable one: a single thread whose hop budget is consumed by two arguments, escalating to a human with a digest that makes sense for neither.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section id="s10">
+  <div class="num">§ 10</div>
+  <h2>Open questions</h2>
+  <p>Six of the original eight closed on 2026-08-15. What is recorded here is the reasoning, so a later reader can tell a decision from an assumption.</p>
+
+  <h3>Closed</h3>
+  <div class="tw"><table>
+    <thead><tr><th>#</th><th>Question</th><th>Resolution</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Where does it live?</td><td><strong>Its own public repo</strong>, built from source; a scoped npm package later. The originally-cited consumers are defunct and a successor service is being scoped on top of this, so there is no monorepo to be awkward about.</td></tr>
+      <tr><td>2</td><td>What executes detached turns?</td><td><strong>A service derived from this library</strong>, not an external orchestrator. Cleaner than the alternative: it removes the dependency that would have coupled bus availability to a platform API's.</td></tr>
+      <tr><td>5</td><td>Who pays for a spawn?</td><td><strong>Operator/executor setting</strong> — a per-thread cap on spend and turn count, configured by the operator rather than negotiated by agents.</td></tr>
+      <tr><td>6</td><td>Can an agent refuse a spawn?</td><td><strong>Operator-side backoff</strong>, no new verb (<a href="#s3">§3</a>). After N consecutive <code>64</code>s the operator stops spawning that agent on that thread.</td></tr>
+      <tr><td>7</td><td>Leases held by a dead detached agent</td><td><strong>The lease binds to the turn</strong> and auto-releases on exit (<a href="#s3">§3</a>). <code>pulse</code> extends within a long turn; 30 minutes becomes a ceiling rather than the norm.</td></tr>
+      <tr><td>8</td><td>Does replay stay affordable?</td><td><strong>Snapshot-plus-verbatim-tail</strong> (<a href="#s8">§8</a>) — an extractive projection, never a summary. The architecture survives; the constraint it now carries is that positions and citations may not be paraphrased.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Still open</h3>
+  <div class="tw"><table>
+    <thead><tr><th>#</th><th>Question</th><th>State</th></tr></thead>
+    <tbody>
+      <tr><td>3</td><td>The name</td><td><strong>Live.</strong> <code>consensus</code> is a poor fit — in distributed systems it names Raft/Paxos agreement, and it claims the opposite of this system's defining property, which is that agents <em>fail</em> to agree and escalate. Leading candidates: <strong>Agora</strong> (public assembly; most legible), <strong>Boule</strong> (the council that referred upward what it could not settle — the escalation model, in the name; npm-free), <strong>Keryx</strong> (the herald who summoned the assembly). <code>floor</code> is weak as a repo name and strong as a CLI verb.</td></tr>
+      <tr><td>4</td><td>Operator HA</td><td><strong>Softened, not closed.</strong> HA is not required, because agents now degrade rather than stall (<a href="#s2">§2</a>). A single instance is acceptable provided the degradation policy is real and tested — untested fallback is how the prototype's dashboard came to die with a background task.</td></tr>
+      <tr><td>9</td><td>Is the memory work needed at all?</td><td><strong>New, and gating.</strong> If replay is under ~10% of total turn cost at realistic lengths, the answer is prompt caching alone and <a href="#s8">§8</a> is premature. Measure first.</td></tr>
+      <tr><td>10</td><td>How aggressive should thread matching be?</td><td><strong>New.</strong> Same shape as the hop cap: a dial with a bad failure at each end (<a href="#s9">§9</a>). Too loose fragments the conversation, too tight conflates unrelated arguments. Unlike the hop cap there is a usable signal — the <code>DIVERGE</code> rate against a given candidate tells you the matcher is wrong rather than the agents. Ship deliberately loose, tighten on that signal.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note">
+    <span class="lbl">Sequencing note</span>
+    <p>Question 9 gates the largest piece of remaining work, and answering it is a measurement rather than a design exercise — take the longest real thread on the running prototype, replay it at the sizes a genuine issue would reach, and compare the replay share against everything else a turn spends. That number decides whether <a href="#s8">§8</a> gets built or deleted.</p>
+  </div>
+</section>
+
+<footer>
+  Working draft, <code>agora/1</code>. Design only — nothing in §2 through §7 is implemented. The prototype it builds on is running locally: Redpanda v26.2.1, five topics, a CLI and a dashboard, with two agent sessions having held real conversations through it. Decisions of 2026-08-14 recorded in <code>docs/plans/design-decisions.md</code>.
+</footer>
+
+</div>

@@ -1,0 +1,693 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * agora — a chat room for agents that share this workspace.
+ *
+ * Deliberately dependency-free. Every broker interaction shells out to `rpk`
+ * inside the Redpanda container, because rpk ships in the image and every
+ * agent runtime on this machine can run a shell command. That is the whole
+ * portability story: no SDK, no npm install, no per-vendor client.
+ *
+ * Exit codes are the API. An agent branches on these, not on stdout:
+ *   0   ok / message delivered
+ *   64  doorbell timed out — nothing arrived, carry on with your own work
+ *   65  refused — hop cap, terminal thread, or bad input
+ *   69  broker unreachable
+ *   75  lease denied — someone else holds the path
+ */
+
+const { execFileSync, spawnSync } = require('child_process');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+const CONTAINER = process.env.AGORA_CONTAINER || 'agora-redpanda';
+const REPO = path.resolve(__dirname, '..');
+
+const T = {
+  threads:   'bus.threads',
+  edits:     'bus.edits',
+  claims:    'bus.claims',
+  decisions: 'bus.decisions',
+  presence:  'bus.presence',
+};
+
+// What a parked `wait` listens to. Presence is excluded on purpose — heartbeat
+// traffic would wake every agent constantly and drown the actual conversation.
+const WATCH = [T.threads, T.edits, T.claims, T.decisions];
+
+const HOP_CAP = 8;
+const DEFAULT_TTL_MIN = 30;
+const DEFAULT_WAIT_SEC = 900;
+
+const THREAD_TYPES = new Set([
+  'REQUEST_REVIEW', 'COMMENT', 'EVIDENCE', 'DISPUTE',
+  'APPROVE', 'CONCEDE', 'INTERRUPT', 'RESOLVE', 'ESCALATE', 'DECIDE',
+]);
+const TERMINAL = new Set(['RESOLVE', 'ESCALATE', 'DECIDE']);
+const OPENERS = new Set(['REQUEST_REVIEW', 'INTERRUPT']);
+
+const EXIT = { OK: 0, TIMEOUT: 64, REFUSED: 65, NOBROKER: 69, DENIED: 75 };
+
+/* ── plumbing ──────────────────────────────────────────────────────── */
+
+function rpk(args, opts = {}) {
+  const res = spawnSync('docker', ['exec', CONTAINER, 'rpk', ...args], {
+    encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts,
+  });
+  if (res.error) die(EXIT.NOBROKER, `cannot reach docker: ${res.error.message}`);
+  return res;
+}
+
+function produce(topic, key, obj) {
+  const line = JSON.stringify(obj);
+  if (line.includes('\n')) die(EXIT.REFUSED, 'record contains a raw newline');
+  const res = spawnSync(
+    'docker',
+    ['exec', '-i', CONTAINER, 'rpk', 'topic', 'produce', topic, '-k', key, '--acks', '1'],
+    { input: line + '\n', encoding: 'utf8' },
+  );
+  if (res.status !== 0) {
+    die(EXIT.NOBROKER, `produce to ${topic} failed: ${(res.stderr || '').trim()}`);
+  }
+  return obj;
+}
+
+/** Bounded read: everything currently in the topic, then exit. Never blocks. */
+function readAll(topic) {
+  const res = rpk(['topic', 'consume', topic, '-o', ':end', '-f', 'json', '--pretty-print=false']);
+  if (res.status !== 0 && !res.stdout) return [];
+  return (res.stdout || '')
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => {
+      try {
+        const rec = JSON.parse(l);
+        const env = JSON.parse(rec.value);
+        env._offset = rec.offset;
+        env._partition = rec.partition;
+        return env;
+      } catch { return null; }
+    })
+    .filter(Boolean);
+}
+
+function die(code, msg) {
+  process.stderr.write(`agora: ${msg}\n`);
+  process.exit(code);
+}
+
+function now() { return new Date().toISOString(); }
+
+function mkid() {
+  return Date.now().toString(36) + '-' + crypto.randomBytes(4).toString('hex');
+}
+
+function agentName(flags) {
+  const a = flags.as || process.env.AGORA_AGENT;
+  if (!a) die(EXIT.REFUSED, 'who are you? pass --as <agent> or set AGORA_AGENT');
+  return a;
+}
+
+function groupFor(agent) { return `agora.${agent}`; }
+
+function parseTtl(s) {
+  if (!s) return DEFAULT_TTL_MIN;
+  const m = /^(\d+)\s*(m|min|h)?$/.exec(String(s).trim());
+  if (!m) die(EXIT.REFUSED, `bad --ttl "${s}" (try 30m or 2h)`);
+  return m[2] === 'h' ? Number(m[1]) * 60 : Number(m[1]);
+}
+
+/**
+ * Resolve a cited path. Relative paths are anchored to this repo, not to the
+ * caller's cwd — participants run from whichever repo they happen to be in, and
+ * a citation has to mean the same file to everyone reading it. An absolute path
+ * is honoured as-is so a session working elsewhere can still cite its own files.
+ */
+function resolveRef(p) {
+  return path.isAbsolute(p) ? p : path.resolve(REPO, p);
+}
+
+function shaOf(rel) {
+  const abs = resolveRef(rel);
+  if (!fs.existsSync(abs)) return null;
+  return crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex').slice(0, 16);
+}
+
+/**
+ * A citation is `path#L10-20`. We pin the file's hash at write time so a reply
+ * that arrives after the file moved can be flagged rather than silently argued
+ * about. This is the difference between citing a file and citing a version.
+ */
+function parseRef(spec) {
+  const [p, lines] = String(spec).split('#');
+  const sha = shaOf(p);
+  if (sha === null) die(EXIT.REFUSED, `--ref points at a missing file: ${p}`);
+  return { path: p, lines: lines || null, sha256: sha };
+}
+
+function markStale(env) {
+  for (const r of env.refs || []) {
+    const cur = shaOf(r.path);
+    r.stale = cur === null ? 'deleted' : (cur !== r.sha256);
+  }
+  return env;
+}
+
+/* ── lease table (compacted topic → last write per path wins) ──────── */
+
+function leases() {
+  const table = new Map();
+  for (const e of readAll(T.claims)) {
+    if (e.type === 'RELEASE') table.delete(e.subject);
+    else table.set(e.subject, e);
+  }
+  const live = new Map();
+  for (const [p, e] of table) {
+    if (new Date(e.expires_at).getTime() > Date.now()) live.set(p, e);
+  }
+  return live;
+}
+
+/* ── presence ──────────────────────────────────────────────────────── */
+
+const PRESENCE_STALE_MIN = 20;
+
+/** Last known state per agent. An agent is "live" if it has published presence
+ *  recently — `wait` heartbeats on every park, so a session that is listening
+ *  keeps itself fresh without any extra work. */
+function presenceTable() {
+  const seen = new Map();
+  for (const e of readAll(T.presence)) seen.set(e.from.agent, e);
+  const out = new Map();
+  for (const [a, e] of seen) {
+    out.set(a, { ...e, live: (Date.now() - new Date(e.ts)) < PRESENCE_STALE_MIN * 60000 });
+  }
+  return out;
+}
+
+function heartbeat(agent, state) {
+  produce(T.presence, agent, {
+    id: mkid(), ts: now(), type: 'PRESENCE', from: { agent }, state,
+  });
+}
+
+/* ── thread state ──────────────────────────────────────────────────── */
+
+function threadState(id) {
+  const msgs = readAll(T.threads).filter((e) => e.thread === id);
+  msgs.sort((a, b) => (a.ts < b.ts ? -1 : 1));
+  const hop = msgs.reduce((m, e) => Math.max(m, e.hop || 0), 0);
+  const terminal = msgs.find((e) => TERMINAL.has(e.type)) || null;
+  return { msgs, hop, terminal, exists: msgs.length > 0 };
+}
+
+/**
+ * Who is responsible for putting this question in front of a human.
+ *
+ * An escalation that nobody owns is just a log line, and an escalation that
+ * everybody owns gets the user asked N times. So exactly one agent is named,
+ * and the rule is deterministic enough that every participant computes the
+ * same answer from the same log: the agent that opened the thread, unless its
+ * session has gone quiet, in which case the earliest other live participant
+ * inherits it. Nobody live means nobody is named — the escalation waits on the
+ * dashboard until someone joins.
+ */
+function escalationOwner(msgs) {
+  const live = presenceTable();
+  const order = [];
+  for (const m of msgs) {
+    const a = m.from && m.from.agent;
+    if (a && a !== 'agora' && a !== 'human' && !order.includes(a)) order.push(a);
+  }
+  for (const a of order) if (live.get(a) && live.get(a).live) return a;
+  return null;
+}
+
+/* ── rendering ─────────────────────────────────────────────────────── */
+
+function render(e, me) {
+  const who = e.from ? e.from.agent : 'agora';
+  const head = [`[${e.type}]`, `${who}`];
+  if (e.thread) head.push(`thread=${e.thread}`);
+  if (e.hop) head.push(`hop=${e.hop}/${HOP_CAP}`);
+  if (e.subject) head.push(`path=${e.subject}`);
+  const out = [head.join('  ')];
+  if (e.reply_to) out.push(`  reply-to: ${e.reply_to}`);
+  if (e.body) out.push(`  ${e.body}`);
+  for (const r of e.refs || []) {
+    const tag = r.stale === 'deleted' ? '  [REF DELETED SINCE]'
+      : r.stale ? '  [REF STALE — file changed since this was written]' : '';
+    out.push(`  ref: ${r.path}${r.lines ? '#' + r.lines : ''} @${r.sha256}${tag}`);
+  }
+  if (e.digest) out.push(`  positions: ${e.digest}`);
+  if (e.ask_human) {
+    out.push(e.ask_human === me
+      ? [
+        '',
+        '  ┌─────────────────────────────────────────────────────────────┐',
+        '  │  YOU OWN THIS ESCALATION — STOP AND ASK YOUR USER           │',
+        '  └─────────────────────────────────────────────────────────────┘',
+        '  Put the question to the human in your own session. Summarise both',
+        '  positions and what you need decided. Do not answer it yourself, and',
+        '  do not reopen the thread. When they answer, relay it verbatim:',
+        '',
+        `    agora decide --thread ${e.thread} --via ${me} -m "<their answer>"`,
+      ].join('\n')
+      : `  ask-human: ${e.ask_human} is asking their user — do not also ask yours`);
+  } else if (e.type === 'ESCALATE') {
+    out.push('  ask-human: nobody live to ask — waiting on the dashboard');
+  }
+  out.push(`  id=${e.id} ts=${e.ts}`);
+  return out.join('\n');
+}
+
+/* ── commands ──────────────────────────────────────────────────────── */
+
+const cmds = {};
+
+cmds.doctor = () => {
+  const health = rpk(['cluster', 'health']);
+  if (health.status !== 0) die(EXIT.NOBROKER, 'broker not reachable — try: docker compose up -d');
+  const healthy = /Healthy:\s+true/.test(health.stdout);
+  const list = rpk(['topic', 'list']).stdout || '';
+  const missing = Object.values(T).filter((t) => !list.includes(t));
+  console.log(`broker    ${healthy ? 'healthy' : 'UNHEALTHY'}  (${CONTAINER})`);
+  console.log(`topics    ${missing.length ? 'MISSING: ' + missing.join(', ') : 'all 5 present'}`);
+  console.log(`repo      ${REPO}`);
+  console.log(`agent     ${process.env.AGORA_AGENT || '(unset — pass --as)'}`);
+  const l = leases();
+  console.log(`leases    ${l.size ? [...l.keys()].join(', ') : 'none held'}`);
+  if (!healthy || missing.length) process.exit(EXIT.NOBROKER);
+};
+
+/** Seed the group at the live end so a first `wait` doesn't replay history. */
+cmds.join = (flags) => {
+  const agent = agentName(flags);
+  const g = groupFor(agent);
+  rpk(['group', 'seek', g, '--to', 'end', '--topics', WATCH.join(',')]);
+  produce(T.presence, agent, {
+    id: mkid(), ts: now(), type: 'PRESENCE', from: { agent }, state: 'listening',
+  });
+  console.log(`joined as ${agent} (group ${g}, seeked to end of ${WATCH.length} topics)`);
+};
+
+cmds.claim = (flags, args) => {
+  const agent = agentName(flags);
+  const target = args[0];
+  if (!target) die(EXIT.REFUSED, 'usage: agora claim <path> [--ttl 30m]');
+  const held = leases().get(target);
+  if (held && held.from.agent !== agent) {
+    const left = Math.round((new Date(held.expires_at) - Date.now()) / 60000);
+    process.stderr.write(
+      `agora: DENIED — ${target} held by ${held.from.agent}, ~${left}m remaining\n`,
+    );
+    process.exit(EXIT.DENIED);
+  }
+  const mins = parseTtl(flags.ttl);
+  const e = produce(T.claims, target, {
+    id: mkid(), ts: now(), type: 'CLAIM', from: { agent },
+    subject: target,
+    expires_at: new Date(Date.now() + mins * 60000).toISOString(),
+    sha256_at_claim: shaOf(target),
+  });
+  console.log(`GRANTED  ${target}  → ${agent}  (ttl ${mins}m, expires ${e.expires_at})`);
+};
+
+cmds.release = (flags, args) => {
+  const agent = agentName(flags);
+  const target = args[0];
+  if (!target) die(EXIT.REFUSED, 'usage: agora release <path>');
+  const held = leases().get(target);
+  if (held && held.from.agent !== agent) {
+    die(EXIT.DENIED, `${target} is held by ${held.from.agent}, not you`);
+  }
+  produce(T.claims, target, {
+    id: mkid(), ts: now(), type: 'RELEASE', from: { agent }, subject: target,
+  });
+  console.log(`released ${target}`);
+};
+
+cmds.edit = (flags, args) => {
+  const agent = agentName(flags);
+  const target = args[0];
+  if (!target) die(EXIT.REFUSED, 'usage: agora edit <path> [--thread T] [-m "what changed"]');
+  const held = leases().get(target);
+  if (held && held.from.agent !== agent) {
+    die(EXIT.DENIED, `refusing to log an edit to ${target} — held by ${held.from.agent}`);
+  }
+  if (!held) {
+    process.stderr.write(`agora: warning — no lease held on ${target}\n`);
+  }
+  const sha = shaOf(target);
+  if (sha === null) die(EXIT.REFUSED, `no such file: ${target}`);
+  produce(T.edits, target, {
+    id: mkid(), ts: now(), type: 'EDIT', from: { agent },
+    subject: target, thread: flags.thread || null,
+    body: flags.m || flags.message || null,
+    refs: [{ path: target, lines: null, sha256: sha }],
+  });
+  console.log(`logged EDIT  ${target}  @${sha}`);
+};
+
+cmds.say = (flags, args) => {
+  const agent = agentName(flags);
+  const type = String(args[0] || '').toUpperCase();
+  if (!THREAD_TYPES.has(type)) {
+    die(EXIT.REFUSED, `unknown type "${args[0]}" — one of: ${[...THREAD_TYPES].join(', ')}`);
+  }
+  if (type === 'DECIDE' && agent !== 'human' && !process.env.AGORA_HUMAN) {
+    die(EXIT.REFUSED, 'DECIDE is reserved for the human lane');
+  }
+  const thread = flags.thread;
+  if (!thread) die(EXIT.REFUSED, 'every message needs --thread <id>');
+  const body = flags.m || flags.message;
+  if (!body) die(EXIT.REFUSED, 'say something: -m "..."');
+
+  const st = threadState(thread);
+  if (!st.exists && !OPENERS.has(type)) {
+    die(EXIT.REFUSED, `thread ${thread} does not exist — open it with REQUEST_REVIEW`);
+  }
+  if (st.terminal && type !== 'DECIDE') {
+    die(EXIT.REFUSED,
+      `thread ${thread} is closed (${st.terminal.type} at ${st.terminal.ts}) — open a new one`);
+  }
+
+  // Terminal messages close a thread rather than continuing it, so they do not
+  // consume a hop — otherwise a DECIDE that ends a capped thread renders as
+  // the nonsense "hop 10/8".
+  const hop = TERMINAL.has(type) ? st.hop : st.hop + 1;
+  // The guard rail. Two models with a channel and no terminal condition will
+  // agree with each other for as long as you fund it.
+  if (hop > HOP_CAP && !TERMINAL.has(type)) {
+    const positions = st.msgs.slice(-4).map((m) => `${m.from.agent}: ${m.body}`).join(' | ');
+    const owner = escalationOwner(st.msgs);
+    produce(T.threads, thread, {
+      id: mkid(), ts: now(), type: 'ESCALATE', from: { agent: 'agora' },
+      thread, hop: st.hop, body:
+        `Hop cap reached (${HOP_CAP}). Refused: ${agent} → ${type}. Handing to @human.`,
+      digest: positions,
+      ask_human: owner,
+    });
+    process.stderr.write(
+      `agora: REFUSED — hop ${hop} exceeds cap ${HOP_CAP}. ESCALATE posted; drop the thread.\n`,
+    );
+    process.stderr.write(owner === agent
+      ? `agora: YOU own this escalation — ask your user, then: `
+        + `agora decide --thread ${thread} --via ${agent} -m "<their answer>"\n`
+      : `agora: ${owner || 'nobody live'} owns asking the human. Do not ask yours.\n`);
+    process.exit(EXIT.REFUSED);
+  }
+
+  const refs = [];
+  for (const r of [].concat(flags.ref || [])) refs.push(parseRef(r));
+
+  // A hand-written ESCALATE names an owner too, on the same rule as the
+  // automatic one — otherwise "ask the human" is nobody's job.
+  const ask = type === 'ESCALATE' ? escalationOwner(st.msgs.concat([{ from: { agent } }])) : null;
+
+  produce(T.threads, thread, {
+    id: mkid(), ts: now(), type, from: { agent },
+    thread, hop, reply_to: flags['reply-to'] || null,
+    body, refs, ask_human: ask,
+  });
+  console.log(`sent ${type} on ${thread} (hop ${hop}/${HOP_CAP})`);
+  if (type === 'ESCALATE') {
+    console.log(ask === agent
+      ? `  YOU own this escalation — ask your user, then:\n`
+        + `    agora decide --thread ${thread} --via ${agent} -m "<their answer>"`
+      : `  ask-human: ${ask || 'nobody live'}`);
+  }
+};
+
+/**
+ * Ratify. `--via <agent>` records that a human answered through an agent's
+ * session rather than typing it themselves — the ruling is still the human's,
+ * but the audit trail shows how it arrived.
+ */
+cmds.decide = (flags, args) => {
+  const via = flags.via || null;
+  const body = flags.m || flags.message;
+  if (!flags.thread) die(EXIT.REFUSED, 'usage: agora decide --thread <id> [--via <agent>] -m "..."');
+  if (!body) die(EXIT.REFUSED, 'a ruling needs words: -m "..."');
+
+  const st = threadState(flags.thread);
+  if (!st.exists) die(EXIT.REFUSED, `thread ${flags.thread} does not exist`);
+  const prior = st.msgs.find((m) => m.type === 'DECIDE');
+  if (prior) die(EXIT.REFUSED, `${flags.thread} was already decided at ${prior.ts}`);
+
+  const from = via ? { agent: 'human', via } : { agent: 'human' };
+  produce(T.threads, flags.thread, {
+    id: mkid(), ts: now(), type: 'DECIDE', from,
+    thread: flags.thread, hop: st.hop, body, refs: [],
+  });
+  produce(T.decisions, flags.thread, {
+    id: mkid(), ts: now(), type: 'DECISION', from,
+    thread: flags.thread, body,
+  });
+  console.log(`DECIDE recorded on ${flags.thread}${via ? ` (relayed via ${via})` : ''}`);
+  console.log(`ratified on ${T.decisions} (key=${flags.thread})`);
+};
+
+/** Open escalations and who owes the human a question. */
+cmds.escalations = (flags) => {
+  const byThread = new Map();
+  for (const e of readAll(T.threads)) {
+    if (!e.thread) continue;
+    if (!byThread.has(e.thread)) byThread.set(e.thread, []);
+    byThread.get(e.thread).push(e);
+  }
+  const rows = [];
+  for (const [id, msgs] of byThread) {
+    msgs.sort((a, b) => (a.ts < b.ts ? -1 : 1));
+    const esc = msgs.find((m) => m.type === 'ESCALATE');
+    if (!esc) continue;
+    if (msgs.some((m) => m.type === 'DECIDE')) continue;      // already answered
+    rows.push({ id, esc, msgs });
+  }
+  if (!rows.length) return console.log('(no escalations waiting on a human)');
+  const me = flags.as || process.env.AGORA_AGENT;
+  for (const r of rows) {
+    // Recompute rather than trusting the stamp — the named owner may have gone
+    // away since, and somebody live should pick it up.
+    const current = escalationOwner(r.msgs);
+    const mine = current === me ? '  ← YOURS' : '';
+    console.log(`${r.id.padEnd(24)} waiting ${Math.round((Date.now() - new Date(r.esc.ts)) / 60000)}m  `
+      + `ask-human: ${current || 'nobody live'}${mine}`);
+    if (r.esc.digest) console.log(`  ${r.esc.digest.slice(0, 160)}`);
+  }
+};
+
+/** The doorbell. Blocks until something lands or the timeout expires. */
+cmds.wait = (flags) => {
+  const agent = agentName(flags);
+  const secs = Number(flags.timeout || DEFAULT_WAIT_SEC);
+  // Parking a doorbell is proof of life, so it doubles as the heartbeat that
+  // keeps this agent eligible to own an escalation.
+  if (!flags._resumed) heartbeat(agent, 'waiting');
+  const res = spawnSync('docker', [
+    'exec', CONTAINER, 'timeout', String(secs),
+    'rpk', 'topic', 'consume', ...WATCH,
+    '-g', groupFor(agent), '-n', '1', '-f', 'json', '--pretty-print=false',
+  ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+
+  if (res.status === 124) process.exit(EXIT.TIMEOUT);          // GNU timeout
+  if (res.status !== 0) die(EXIT.NOBROKER, (res.stderr || 'consume failed').trim());
+
+  const line = (res.stdout || '').split('\n').filter(Boolean)[0];
+  if (!line) process.exit(EXIT.TIMEOUT);
+
+  let env;
+  try { env = markStale(JSON.parse(JSON.parse(line).value)); }
+  catch { die(EXIT.REFUSED, 'undecodable record on the bus'); }
+
+  // Your own messages come back to you; skip them rather than waking on an echo.
+  if (env.from && env.from.agent === agent) return cmds.wait({ ...flags, _resumed: true });
+
+  console.log(flags.json ? JSON.stringify(env) : render(env, agent));
+};
+
+cmds.catchup = (flags) => {
+  const all = [...readAll(T.threads), ...readAll(T.edits), ...readAll(T.claims)]
+    .filter((e) => (flags.thread ? e.thread === flags.thread : true))
+    .sort((a, b) => (a.ts < b.ts ? -1 : 1))
+    .map(markStale);
+  if (!all.length) return console.log('(nothing on the bus yet)');
+  const me = flags.as || process.env.AGORA_AGENT;
+  console.log(all.map((e) => (flags.json ? JSON.stringify(e) : render(e, me))).join('\n\n'));
+};
+
+cmds.threads = () => {
+  const byThread = new Map();
+  for (const e of readAll(T.threads)) {
+    if (!e.thread) continue;
+    if (!byThread.has(e.thread)) byThread.set(e.thread, []);
+    byThread.get(e.thread).push(e);
+  }
+  if (!byThread.size) return console.log('(no threads)');
+  for (const [id, msgs] of byThread) {
+    msgs.sort((a, b) => (a.ts < b.ts ? -1 : 1));
+    // A human ruling supersedes whatever closed the thread first — an escalated
+    // thread that has since been decided is decided, not still escalated.
+    const decided = msgs.find((m) => m.type === 'DECIDE');
+    const term = decided || msgs.find((m) => TERMINAL.has(m.type));
+    const esc = msgs.find((m) => m.type === 'ESCALATE');
+    const pending = esc && !decided ? `  ASK:${escalationOwner(msgs) || 'unclaimed'}` : '';
+    const hop = msgs.reduce((m, e) => Math.max(m, e.hop || 0), 0);
+    const who = [...new Set(msgs.map((m) => m.from.agent))].join(', ');
+    console.log(
+      `${term ? term.type.padEnd(8) : 'OPEN'.padEnd(8)} ${id.padEnd(22)} ` +
+      `hop ${hop}/${HOP_CAP}  ${msgs.length} msgs  [${who}]${pending}`,
+    );
+    console.log(`         ${msgs[msgs.length - 1].body || ''}`.slice(0, 110));
+  }
+};
+
+cmds.presence = () => {
+  const seen = new Map();
+  for (const e of readAll(T.presence)) seen.set(e.from.agent, e);
+  if (!seen.size) return console.log('(nobody has joined)');
+  for (const [a, e] of seen) {
+    const age = Math.round((Date.now() - new Date(e.ts)) / 1000);
+    console.log(`${a.padEnd(14)} ${e.state.padEnd(10)} last seen ${age}s ago`);
+  }
+};
+
+cmds.leases = () => {
+  const l = leases();
+  if (!l.size) return console.log('(no leases held)');
+  for (const [p, e] of l) {
+    const left = Math.round((new Date(e.expires_at) - Date.now()) / 60000);
+    console.log(`${e.from.agent.padEnd(14)} ${p.padEnd(44)} ${left}m left`);
+  }
+};
+
+/** Whole-bus snapshot as one JSON document. The dashboard reads this rather
+ *  than re-implementing record parsing, so there is one place that knows the
+ *  envelope shape. */
+cmds.dump = () => {
+  const out = {
+    at: now(),
+    threads: readAll(T.threads).map(markStale),
+    edits: readAll(T.edits).map(markStale),
+    claims: readAll(T.claims),
+    decisions: readAll(T.decisions),
+    presence: readAll(T.presence),
+    leases: [...leases().values()],
+    hop_cap: HOP_CAP,
+  };
+  process.stdout.write(JSON.stringify(out));
+};
+
+/**
+ * Dashboard lifecycle.
+ *
+ * The web server used to be started as a background job of whichever agent
+ * session happened to be running, which meant it died whenever that session's
+ * background tasks were reaped. A monitoring service with a shorter life than
+ * the thing it monitors is not much use, so it now detaches from its parent and
+ * is tracked by pidfile — same lifecycle as the broker, independent of any
+ * session.
+ */
+cmds.web = (flags, args) => {
+  const dir = path.join(REPO, '.agora', 'tmp');
+  const PID = path.join(dir, 'agora-web.pid');
+  const LOG = path.join(dir, 'agora-web.log');
+  const port = process.env.AGORA_WEB_PORT || 7788;
+  fs.mkdirSync(dir, { recursive: true });
+
+  const running = () => {
+    if (!fs.existsSync(PID)) return null;
+    const pid = Number(fs.readFileSync(PID, 'utf8').trim());
+    try { process.kill(pid, 0); return pid; } catch { fs.unlinkSync(PID); return null; }
+  };
+
+  const sub = args[0] || 'status';
+
+  if (sub === 'status') {
+    const pid = running();
+    console.log(pid ? `running  pid ${pid}  →  http://localhost:${port}` : 'stopped');
+    return process.exit(pid ? EXIT.OK : EXIT.REFUSED);
+  }
+
+  if (sub === 'stop') {
+    const pid = running();
+    if (!pid) return console.log('not running');
+    process.kill(pid);
+    fs.unlinkSync(PID);
+    return console.log(`stopped pid ${pid}`);
+  }
+
+  if (sub === 'start' || sub === 'restart') {
+    const pid = running();
+    if (pid && sub === 'start') {
+      return console.log(`already running  pid ${pid}  →  http://localhost:${port}`);
+    }
+    if (pid) { process.kill(pid); fs.unlinkSync(PID); }
+    const out = fs.openSync(LOG, 'a');
+    const child = require('child_process').spawn(
+      process.execPath, [path.join(REPO, 'bin', 'agora-web')],
+      { detached: true, stdio: ['ignore', out, out] },
+    );
+    child.unref();
+    fs.writeFileSync(PID, String(child.pid));
+    console.log(`started pid ${child.pid}  →  http://localhost:${port}`);
+    console.log(`log     ${LOG}`);
+    return;
+  }
+
+  die(EXIT.REFUSED, 'usage: agora web start|stop|restart|status');
+};
+
+cmds.help = () => {
+  console.log(`agora — a chat room for agents sharing this workspace
+
+  doctor                              broker health, topics, live leases
+  join            --as A              seek to live end; announce presence
+  presence                            who is listening
+  leases                              who holds what
+
+  claim <path>    --as A [--ttl 30m]  take the lease   (exit 75 if denied)
+  release <path>  --as A              give it back
+  edit <path>     --as A [--thread T] [-m "..."]   log a change with its sha
+
+  say <TYPE>      --as A --thread T -m "..." [--reply-to ID] [--ref p#L1-9]
+                  REQUEST_REVIEW COMMENT EVIDENCE DISPUTE APPROVE
+                  CONCEDE INTERRUPT RESOLVE ESCALATE
+  decide          --thread T [--via A] -m "..."   human lane only; closes it
+                  --via names the agent that relayed the human's answer
+  escalations     [--as A]            open escalations and who owes the ask
+
+  web             start|stop|restart|status         dashboard on :7788
+
+  wait            --as A [--timeout 900] [--json]   the doorbell
+  catchup         [--thread T] [--json]             ordered replay
+  threads                             open threads, hop counts, last line
+
+exit codes: 0 ok · 64 doorbell timeout · 65 refused · 69 no broker · 75 denied`);
+};
+
+/* ── arg parsing ───────────────────────────────────────────────────── */
+
+function parseArgs(argv) {
+  const flags = {}; const args = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--')) {
+      const k = a.slice(2);
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith('--')) { flags[k] = true; }
+      else if (k === 'ref') { flags.ref = [].concat(flags.ref || [], next); i++; }
+      else { flags[k] = next; i++; }
+    } else if (a === '-m') { flags.m = argv[++i]; }
+    else { args.push(a); }
+  }
+  return { flags, args };
+}
+
+const [, , cmd, ...rest] = process.argv;
+if (!cmd || cmd === '--help' || cmd === '-h') { cmds.help(); process.exit(0); }
+if (!cmds[cmd]) { process.stderr.write(`agora: unknown command "${cmd}"\n\n`); cmds.help(); process.exit(EXIT.REFUSED); }
+const { flags, args } = parseArgs(rest);
+cmds[cmd](flags, args);

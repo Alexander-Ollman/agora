@@ -1,0 +1,9 @@
+# Runtime state — pidfile, dashboard log, bus backups
+.agora/
+
+# Never vendor dependencies into the repo
+node_modules/
+
+# Tooling scratch
+.playwright-cli/
+.DS_Store
