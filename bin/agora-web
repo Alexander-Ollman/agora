@@ -29,6 +29,7 @@ const PORT = Number(process.env.AGORA_WEB_PORT || 7788);
 const TOPICS = ['bus.threads', 'bus.edits', 'bus.claims', 'bus.decisions', 'bus.presence'];
 
 const clients = new Set();
+let shuttingDown = false;
 
 function dump() {
   try {
@@ -45,8 +46,30 @@ function broadcast(env) {
   }
 }
 
+/**
+ * Kill any `rpk topic consume` left inside the container.
+ *
+ * The tail runs via `docker exec`, and Docker does not propagate the client's
+ * death to the process inside the container — so killing this server leaves the
+ * tail running, orphaned, forever. Each restart leaked one. Worse, an orphan
+ * whose topics were deleted underneath it spins in a retry loop: three of them
+ * once sustained ~155% CPU between them while the broker itself idled at 0.4%.
+ *
+ * Scans /proc rather than using pkill, which the image does not ship.
+ */
+function reapTails() {
+  const sh = `for p in /proc/[0-9]*; do
+    c=$(tr "\\0" " " < "$p/cmdline" 2>/dev/null)
+    case "$c" in */rpk\\ topic\\ consume*) kill -9 "\${p#/proc/}" 2>/dev/null ;; esac
+  done`;
+  try {
+    spawnSync('docker', ['exec', CONTAINER, 'sh', '-c', sh], { encoding: 'utf8', timeout: 10000 });
+  } catch { /* broker may be gone; nothing to reap */ }
+}
+
 /** One tail for the whole process, fanned out to every connected browser. */
 function startTail() {
+  reapTails();   // self-heals orphans from a previous run that died badly
   const child = spawn('docker', [
     'exec', CONTAINER, 'rpk', 'topic', 'consume', ...TOPICS,
     '-o', 'end', '-f', 'json', '--pretty-print=false',
@@ -74,8 +97,9 @@ function startTail() {
   });
 
   child.on('exit', (code) => {
+    if (shuttingDown) return;   // we killed it on purpose; do not resurrect
     process.stderr.write(`agora-web: tail exited (${code}), restarting in 2s\n`);
-    setTimeout(startTail, 2000);
+    setTimeout(() => { if (!shuttingDown) startTail(); }, 2000);
   });
 }
 
@@ -161,6 +185,18 @@ const server = http.createServer((req, res) => {
 
   res.writeHead(404); res.end('not found');
 });
+
+// The tail outlives this process unless we say otherwise, so every exit path
+// has to reap. `agora web stop` sends SIGTERM.
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+  process.on(sig, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    reapTails();
+    process.exit(0);
+  });
+}
+process.on('exit', () => { if (!shuttingDown) reapTails(); });
 
 server.listen(PORT, '127.0.0.1', () => {
   process.stdout.write(`agora-web  →  http://localhost:${PORT}\n`);

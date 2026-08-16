@@ -611,12 +611,37 @@ cmds.web = (flags, args) => {
     return process.exit(pid ? EXIT.OK : EXIT.REFUSED);
   }
 
+  // The dashboard's tail runs inside the container via `docker exec`, and
+  // Docker does not kill it when the client dies. The server reaps on SIGTERM,
+  // but a SIGKILLed or crashed server cannot — so sweep here too. Orphaned
+  // tails spin against deleted topics and are expensive: three once held ~155%
+  // CPU while the broker itself idled at 0.4%.
+  const reapTails = () => {
+    const sh = 'for p in /proc/[0-9]*; do'
+      + ' c=$(tr "\\0" " " < "$p/cmdline" 2>/dev/null);'
+      + ' case "$c" in */rpk\\ topic\\ consume*) kill -9 "${p#/proc/}" 2>/dev/null ;; esac;'
+      + ' done';
+    spawnSync('docker', ['exec', CONTAINER, 'sh', '-c', sh], { encoding: 'utf8', timeout: 10000 });
+  };
+
+  // Killing a process and immediately rebinding its port loses the race: the
+  // new server dies on EADDRINUSE and the pidfile then points at a corpse.
+  // Wait for it to actually go, and escalate if it will not.
+  const sleepSync = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+  const stopPid = (pid) => {
+    try { process.kill(pid, 'SIGTERM'); } catch { return; }
+    for (let i = 0; i < 50; i++) {                 // up to 5s
+      sleepSync(100);
+      try { process.kill(pid, 0); } catch { return; }
+    }
+    try { process.kill(pid, 'SIGKILL'); sleepSync(200); } catch { /* already gone */ }
+  };
+
   if (sub === 'stop') {
     const pid = running();
-    if (!pid) return console.log('not running');
-    process.kill(pid);
-    fs.unlinkSync(PID);
-    return console.log(`stopped pid ${pid}`);
+    if (pid) { stopPid(pid); try { fs.unlinkSync(PID); } catch {} }
+    reapTails();
+    return console.log(pid ? `stopped pid ${pid}, tails reaped` : 'not running; tails reaped');
   }
 
   if (sub === 'start' || sub === 'restart') {
@@ -624,7 +649,7 @@ cmds.web = (flags, args) => {
     if (pid && sub === 'start') {
       return console.log(`already running  pid ${pid}  →  http://localhost:${port}`);
     }
-    if (pid) { process.kill(pid); fs.unlinkSync(PID); }
+    if (pid) { stopPid(pid); try { fs.unlinkSync(PID); } catch {} }
     const out = fs.openSync(LOG, 'a');
     const child = require('child_process').spawn(
       process.execPath, [path.join(REPO, 'bin', 'agora-web')],
