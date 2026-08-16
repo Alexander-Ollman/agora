@@ -68,7 +68,12 @@
   .meter i.hot { background:var(--warn); }
   .who { display:flex; gap:5px; flex-wrap:wrap; margin-top:5px; }
   .who span { font-size:10px; font-weight:700; }
-  .pane { overflow-y:auto; padding:0 26px 60px; }
+  /* The pane is a column: messages scroll, the composer holds the bottom.
+     A sticky composer floats over the last message instead of yielding space
+     to it, which is exactly the thing you are trying to read while replying. */
+  .pane { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+  .msgs { flex:1 1 auto; overflow-y:auto; padding:0 26px 24px; }
+  .pane > .comp, .pane > .comp.closed { flex:0 0 auto; padding:12px 26px 16px; }
   .pane h2 { font-family:var(--disp); font-size:22px; margin:22px 0 2px; letter-spacing:-.01em; }
   .sub { color:var(--ink-3); font-size:12px; margin-bottom:18px; }
   .msg { padding:13px 0 14px; border-bottom:1px solid var(--rule); }
@@ -89,6 +94,37 @@
   .ref { font-size:11px; color:var(--ink-3); margin-top:6px; }
   .ref.stale { color:var(--bad); }
   .empty { color:var(--ink-3); padding:60px 0; text-align:center; }
+
+  /* composer — the human lane */
+  .comp { background:var(--surface); border-top:1px solid var(--rule-hard); }
+  .comp-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap; }
+  .comp-row .who {
+    font-weight:700; font-size:11px; letter-spacing:.06em;
+    color:var(--paper); background:var(--ink); padding:2px 8px; border-radius:2px;
+  }
+  select, input[type=text], textarea {
+    font-family:var(--mono); font-size:12.5px; color:var(--ink);
+    background:var(--surface); border:1px solid var(--rule-hard);
+    border-radius:2px; padding:6px 8px;
+  }
+  select:focus, input:focus, textarea:focus { outline:2px solid var(--ink-3); outline-offset:1px; }
+  textarea {
+    width:100%; min-height:74px; resize:vertical; line-height:1.5; display:block;
+  }
+  #refs { flex:1; min-width:180px; }
+  .comp-foot { display:flex; gap:10px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+  .hint { font-size:11px; color:var(--ink-3); }
+  button.send {
+    margin-left:auto; font-family:var(--disp); font-size:11px; font-weight:700;
+    letter-spacing:.09em; padding:7px 16px; cursor:pointer;
+    border:1px solid var(--ink); background:var(--ink); color:var(--paper); border-radius:2px;
+  }
+  button.send:hover:not(:disabled) { background:transparent; color:var(--ink); }
+  button.send:disabled { opacity:.4; cursor:not-allowed; }
+  .comp-msg { font-size:11.5px; margin-top:7px; }
+  .comp-msg.err { color:var(--bad); }
+  .comp-msg.ok  { color:var(--ok); }
+  .comp.closed { opacity:.55; }
   .flash { animation: fl 1.1s ease; }
   @keyframes fl { from { background:var(--surface-2); } to { background:transparent; } }
   @media (prefers-reduced-motion: reduce) { .flash { animation:none; } }
@@ -98,7 +134,7 @@
 <body>
 
 <header>
-  <span class="brand">agora/span>
+  <span class="brand">agora</span>
   <span class="lbl">leases</span><span class="strip" id="leases"></span>
   <span class="lbl">here</span><span class="strip" id="presence"></span>
   <span class="live"><span class="led" id="led"></span><span id="livetxt">connecting</span></span>
@@ -191,6 +227,21 @@ function renderList() {
 
 function renderPane(flashId) {
   const pane = document.getElementById('pane');
+
+  // A peer's message re-renders this pane. Capture anything half-typed first,
+  // or the agents interrupt you mid-sentence and take your draft with them.
+  const keep = (() => {
+    const b = document.getElementById('mbody');
+    if (!b) return null;
+    return {
+      body: b.value,
+      refs: (document.getElementById('refs') || {}).value || '',
+      type: (document.getElementById('mtype') || {}).value || '',
+      focused: document.activeElement === b,
+      start: b.selectionStart, end: b.selectionEnd,
+    };
+  })();
+
   if (!selected || !threads.has(selected)) {
     pane.innerHTML = '<div class="empty">Select a thread</div>';
     return;
@@ -199,7 +250,7 @@ function renderPane(flashId) {
   const hop = msgs.reduce((m, e) => Math.max(m, e.hop || 0), 0);
   const status = statusOf(msgs);
 
-  pane.innerHTML = '<h2>' + esc(selected) + '</h2>' +
+  pane.innerHTML = '<div class="msgs"><h2>' + esc(selected) + '</h2>' +
     '<div class="sub">' + status + ' · hop ' + hop + '/' + HOP_CAP + ' · ' +
     msgs.length + ' messages</div>' +
     msgs.map(m => {
@@ -221,7 +272,108 @@ function renderPane(flashId) {
         (m.hop ? '<span style="font-size:11px;color:var(--ink-3)">hop ' + m.hop + '</span>' : '') +
         '<span class="when">' + ago(m.ts) + '</span></div>' +
         '<div class="body">' + esc(m.body || '') + '</div>' + ask + refs + '</div>';
-    }).join('');
+    }).join('') + '</div>' + composer(status, msgs);
+
+  // Keep the newest message in view; a thread you are replying to should not
+  // open scrolled to something said four days ago.
+  const list = pane.querySelector('.msgs');
+  if (list) list.scrollTop = list.scrollHeight;
+
+  wireComposer();
+
+  if (keep) {
+    const b = document.getElementById('mbody');
+    if (b) {
+      b.value = keep.body;
+      const r = document.getElementById('refs'); if (r) r.value = keep.refs;
+      const t = document.getElementById('mtype');
+      if (t && [...t.options].some(o => o.value === keep.type)) t.value = keep.type;
+      if (keep.focused) { b.focus(); try { b.setSelectionRange(keep.start, keep.end); } catch {} }
+    }
+  }
+}
+
+/**
+ * The human lane. A closed thread accepts nothing further, except that an
+ * escalated-but-unanswered one is exactly where a DECIDE belongs — so the
+ * composer offers the verbs the thread can actually accept rather than letting
+ * the server refuse them after the fact.
+ */
+function composer(status, msgs) {
+  const decided = msgs.some(m => m.type === 'DECIDE');
+  const escalated = msgs.some(m => m.type === 'ESCALATE');
+  const terminal = TERMINAL[status];
+
+  if (decided || (terminal && !escalated)) {
+    return '<div class="comp closed"><div class="hint">' +
+      'This thread is closed (' + esc(status) + '). Open a new one to continue.' +
+      '</div></div>';
+  }
+
+  const types = escalated
+    ? ['DECIDE', 'COMMENT', 'EVIDENCE']
+    : ['COMMENT', 'EVIDENCE', 'DISPUTE', 'APPROVE', 'DECIDE'];
+
+  return '<div class="comp">' +
+    '<div class="comp-row"><span class="who">human</span>' +
+      '<select id="mtype">' + types.map(t => '<option>' + t + '</option>').join('') + '</select>' +
+      '<input type="text" id="refs" placeholder="optional refs — path#L40-60, comma separated">' +
+    '</div>' +
+    '<textarea id="mbody" placeholder="Say something to the agents on this thread…"></textarea>' +
+    '<div class="comp-foot">' +
+      '<span class="hint">⌘↵ to send' + (escalated ? ' · DECIDE closes the thread and unblocks both agents' : '') + '</span>' +
+      '<button class="send" id="send">SEND</button>' +
+    '</div>' +
+    '<div class="comp-msg" id="cmsg"></div>' +
+  '</div>';
+}
+
+function wireComposer() {
+  const btn = document.getElementById('send');
+  if (!btn) return;
+  const body = document.getElementById('mbody');
+  const msg = document.getElementById('cmsg');
+
+  const send = async () => {
+    const text = body.value.trim();
+    if (!text) { body.focus(); return; }
+    const refs = document.getElementById('refs').value
+      .split(',').map(s => s.trim()).filter(Boolean);
+    btn.disabled = true;
+    msg.className = 'comp-msg';
+    msg.textContent = 'sending…';
+    try {
+      const r = await fetch('/api/say', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Agora': '1' },
+        body: JSON.stringify({
+          thread: selected,
+          type: document.getElementById('mtype').value,
+          body: text, refs,
+        }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        body.value = ''; document.getElementById('refs').value = '';
+        msg.className = 'comp-msg ok';
+        msg.textContent = d.stdout || 'sent';
+        // The message arrives back over SSE and re-renders the pane, so there
+        // is deliberately no optimistic insert here — one source of truth.
+      } else {
+        msg.className = 'comp-msg err';
+        msg.textContent = (d.error || 'refused') + (d.code ? '  (exit ' + d.code + ')' : '');
+      }
+    } catch (e) {
+      msg.className = 'comp-msg err';
+      msg.textContent = 'could not reach the dashboard server';
+    }
+    btn.disabled = false;
+  };
+
+  btn.onclick = send;
+  body.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send(); }
+  });
 }
 
 function renderStrips() {
