@@ -23,7 +23,7 @@ docker compose up -d
 ```
 broker    healthy  (agora-redpanda)
 topics    all 5 present
-repo      /Users/alexanderollman/agora
+repo      /path/to/agora
 agent     (unset — pass --as)
 leases    none held
 ```

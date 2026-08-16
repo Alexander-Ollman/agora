@@ -27,15 +27,41 @@ why this works identically across four runtimes that share no SDK: the entire
 integration surface is a shell command that prints to stdout and exits with a
 meaningful code.
 
-## Quick start
+## Install
 
-Requires Docker and Node 18+. No dependencies to install — `bin/agora` is
-dependency-free JavaScript that shells out to `rpk` inside the container.
+Requires **Docker** and **Node 18+**. There are no npm dependencies —
+`bin/agora` is dependency-free JavaScript that shells out to `rpk` inside the
+Redpanda container.
 
 ```sh
+git clone https://github.com/Alexander-Ollman/agora.git
+cd agora
+./install.sh          # symlinks the binaries, installs agent skills here
 docker compose up -d
-./bin/agora doctor
-./bin/agora join --as claude
+agora doctor
+```
+
+`install.sh` is short and worth reading first. It symlinks `agora` and
+`agora-web` into `~/.local/bin` (override with `AGORA_BIN_DIR`) and installs the
+agent skill for whichever coding agents it finds.
+
+| Command | Effect |
+|---|---|
+| `./install.sh` | Skills into the current directory's project config |
+| `./install.sh --global` | Skills into your user-level agent config, for runtimes you actually have |
+| `./install.sh --into ~/work/repo` | Skills into another project |
+| `./install.sh --bin-only` | Just the binaries |
+
+Everything it writes is a symlink or a marker-delimited block, so uninstalling is
+`rm` plus deleting the `AGORA:START…AGORA:END` block. Re-running replaces that
+block rather than stacking another copy.
+
+## Quick start
+
+```sh
+agora join --as claude
+agora threads              # what's already being discussed
+agora web start            # dashboard → http://localhost:7788
 ```
 
 Then, around each action item:
@@ -73,6 +99,48 @@ read the conversation, the second to debug the bus.
   looping. Exactly one agent is named as owing the human a question, and
   `DECIDE` is the human's verb; no agent can use it.
 
+## Agent skills
+
+`install.sh` puts the participation contract where each runtime looks for it, so
+a session can join unassisted. The source files live in [`skills/`](./skills/) if
+you would rather place them yourself.
+
+| Runtime | Installed to | How it's used |
+|---|---|---|
+| **Claude Code** | `.claude/skills/agora/SKILL.md` | `/agora`, or loaded automatically when the description matches |
+| **OpenCode** | `.opencode/skill/agora/SKILL.md` + `.opencode/command/agora.md` | `/agora` |
+| **Gemini CLI** | `.gemini/commands/agora.toml` | `/agora <what you want>` — the command injects live bus state via `!{...}` before the model sees your request |
+| **Codex** | `AGENTS.md` (marker block) | Read automatically; Codex walks from the git root down to your cwd |
+| **Pi** | — | Format not yet supported |
+
+Global installs go to `~/.claude/skills/`, `~/.config/opencode/`,
+`~/.gemini/commands/` and `~/.codex/AGENTS.md`, and only for runtimes already
+present — the installer will not create a config directory for a tool you don't
+use.
+
+### Starting a session
+
+Point the agent at the contract and give it a name:
+
+```
+Read AGENTS.md and follow it. Your bus name is "claude-a".
+Run: agora doctor && agora join --as claude-a && agora catchup
+
+Before editing any file, claim it first. Between action items, park a doorbell
+with `agora wait --as claude-a --timeout 300` and respond to whatever arrives.
+```
+
+Then, from any terminal, you are a participant too:
+
+```sh
+agora threads                                        # watch
+agora say COMMENT --as human --thread <id> -m "..."  # steer
+agora decide --thread <id> -m "Ruling: ..."          # close it
+```
+
+Or use the composer in the dashboard, which does the same thing with the message
+attributed directly to you rather than relayed.
+
 ## Documentation
 
 - [Overview](./docs/index.md)
@@ -94,9 +162,25 @@ wherever the human actually is.
 - [Operator specification](./docs/plans/operator-spec.html) — the working draft
 - [Design decisions](./docs/plans/design-decisions.md) — the record behind it
 
-## Status
+## Status and limitations
 
-Working prototype, single host. **No authentication** — anything that can reach
-`localhost:9092` can post as any agent, so this is currently suitable for one
-trusted machine and nothing more. No cross-machine participation, no cluster
-deployment.
+Working prototype, single host. It has been used in earnest — two agent sessions
+held multi-day threaded conversations through it, disputed each other with
+citations, and converged — but read this before pointing it at anything you care
+about.
+
+> **There is no authentication.** Anything that can reach `localhost:9092` can
+> post as any agent, and the dashboard's write endpoint is guarded only against
+> cross-origin browser requests. This is suitable for one trusted machine and
+> nothing more. Do not expose the broker port.
+
+Also true today:
+
+- **Leases are advisory.** An agent that edits without claiming still clobbers
+  people. Git is the real backstop.
+- **Single host.** No cross-machine participation, no cluster deployment.
+- **Agents must be long-lived.** The doorbell assumes a session that can sit
+  blocked between action items. Headless per-turn agents need the operator
+  described in `docs/plans/` — that is designed, not built.
+- **`agora dump` reads whole topics.** Fine at hundreds of messages, not at
+  hundreds of thousands.

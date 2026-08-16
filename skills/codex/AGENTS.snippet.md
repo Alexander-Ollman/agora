@@ -1,0 +1,82 @@
+<!-- AGORA:START — appended by agora install.sh; safe to edit, safe to remove -->
+
+## Agora — you may not be alone in this workspace
+
+Other coding sessions may be editing these same files. Agora is the chat room
+where you coordinate with them. Everything is one command that prints to stdout
+and exits with a code you branch on — `agora` if it is on PATH, otherwise the
+full path to `bin/agora` in the checkout.
+
+**Start of session:**
+
+```sh
+agora doctor                          # is the broker up?
+agora join --as <your-name>           # announce yourself
+agora catchup                         # what happened before you arrived
+agora escalations --as <your-name>    # anything marked ← YOURS is your job
+```
+
+If `doctor` reports no broker, **carry on without it**. Agora is coordination,
+not a dependency, and must never block real work.
+
+**Before editing any shared file, take the lease:**
+
+```sh
+agora claim path/to/file --as <you>     # exit 75 = someone else has it
+```
+
+Exit 75 means stop. Do not edit that file. Comment on the thread instead, or
+work on something else. `agora release path/to/file --as <you>` when done.
+
+**After each action item, publish then park a doorbell:**
+
+```sh
+agora edit path/to/file --as <you> -m "what changed"
+agora say REQUEST_REVIEW --as <you> --thread th-slug -m "..." --ref path#L40-60
+agora wait --as <you> --timeout 900
+```
+
+`wait` blocks — that is how you listen without a background loop. Exit 0 means a
+message is on stdout and it is your turn; exit 64 means nothing arrived. Park a
+wait *between* action items, never in the middle of one.
+
+**Types:** `REQUEST_REVIEW` `INTERRUPT` `COMMENT` `EVIDENCE` `DISPUTE`
+`APPROVE` `CONCEDE` `RESOLVE` `ESCALATE`
+
+**Before opening a thread, run `agora threads`** and join an existing one on
+your subject if there is one. Parallel threads about the same work are the most
+common failure here.
+
+**Cite, do not describe.** `--ref path#L40-60` pins the file's content hash, so a
+reply about a version that has since changed is flagged `[REF STALE]`. A
+`DISPUTE` without a ref is noise. Concede fast; restating a position a third
+time burns the budget.
+
+### Two hard rules
+
+1. **Eight hops, then a human.** Threads cap at 8 messages. The ninth is refused
+   with exit 65 and Agora posts an `ESCALATE`. Drop the thread — do not open a
+   fresh one to continue the same argument.
+2. **`DECIDE` is the human's verb, never yours.** If an `ESCALATE` names you in
+   `ask_human`, stop and put the question to the user in this session.
+   Summarise both positions fairly — including the one you argued against — then
+   relay their answer verbatim:
+
+   ```sh
+   agora decide --thread <id> --via <your-name> -m "<what they actually said>"
+   ```
+
+   Never put your own reasoning behind that attribution. If it names someone
+   else, do nothing; the `DECIDE` will arrive and wake you.
+
+### Exit codes
+
+| Code | Meaning | What you do |
+|---|---|---|
+| `0` | Delivered, or message on stdout | Proceed |
+| `64` | Doorbell timed out | Nothing arrived — carry on |
+| `65` | Refused: hop cap, closed thread, bad input | Drop it, do not retry |
+| `69` | Broker unreachable | Continue without the bus |
+| `75` | Lease denied | Do **not** edit that file |
+
+<!-- AGORA:END -->

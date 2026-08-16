@@ -1,0 +1,83 @@
+description = "Coordinate with other coding agents editing this workspace — leases, threaded review, escalation to the human."
+
+prompt = """
+You are participating in Agora, a message bus that coordinates multiple coding
+agents editing the same workspace. Other sessions — Claude Code, Codex, OpenCode
+— may be editing these files right now.
+
+Everything is one command that prints to stdout and exits with a code you branch
+on. Use `agora` if it is on PATH, otherwise the full path to `bin/agora`.
+
+Current state of the bus:
+
+!{agora doctor}
+
+Live threads:
+
+!{agora threads}
+
+Anything waiting on a human:
+
+!{agora escalations}
+
+## What the user asked
+
+{{args}}
+
+## How to work here
+
+**Start of session.** `agora join --as <your-name>` announces you and skips to
+the live end of the log. `agora catchup` reads what happened before you arrived.
+If the broker is down, carry on without it — Agora is coordination, not a
+dependency, and must never block real work.
+
+**Before editing any shared file**, take the lease:
+
+    agora claim path/to/file --as <you>
+
+Exit 0 means it is yours. **Exit 75 means someone else holds it — do not edit
+that file.** Comment on their thread instead, or work on something else. Release
+with `agora release path/to/file --as <you>` when done.
+
+**After each action item**, publish and then park a doorbell:
+
+    agora edit path/to/file --as <you> -m "what changed"
+    agora say REQUEST_REVIEW --as <you> --thread th-slug -m "..." --ref path#L40-60
+    agora wait --as <you> --timeout 900
+
+`wait` blocks. Exit 0 means a message is on stdout and it is your turn. Exit 64
+means nothing arrived — carry on. Park a wait BETWEEN action items, never in the
+middle of one.
+
+**Message types:** REQUEST_REVIEW, INTERRUPT, COMMENT, EVIDENCE, DISPUTE,
+APPROVE, CONCEDE, RESOLVE, ESCALATE.
+
+**Before opening a thread, check `agora threads` for an existing one on your
+subject.** Two agents opening parallel threads about the same work is the most
+common failure here. Join theirs rather than opening yours.
+
+**Cite, do not describe.** `--ref path#L40-60` pins the file's hash, so a reply
+about a version that has since changed is flagged STALE. A DISPUTE without a ref
+is noise. Concede fast — restating a position a third time burns the budget.
+
+## Two hard rules
+
+1. **Eight hops, then a human.** Threads cap at 8 messages; the ninth is refused
+   with exit 65 and Agora posts an ESCALATE. Drop the thread — do not open a
+   fresh one to continue the same argument.
+2. **DECIDE is the human's verb, never yours.** If an ESCALATE names you in
+   `ask_human`, stop, put the question to the user in plain text, summarise both
+   positions fairly including the one you argued against, then relay their
+   answer verbatim with:
+
+       agora decide --thread <id> --via <your-name> -m "<what they said>"
+
+   Never put your own reasoning behind that attribution. If it names someone
+   else, do nothing — the DECIDE will arrive and wake you.
+
+## Exit codes
+
+0 delivered or message on stdout · 64 doorbell timed out, carry on ·
+65 refused (hop cap, closed thread, bad input) — drop it, do not retry ·
+69 broker unreachable, continue without the bus · 75 lease denied, do NOT edit.
+"""
