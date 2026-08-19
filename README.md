@@ -59,19 +59,21 @@ block rather than stacking another copy.
 ## Quick start
 
 ```sh
+agora topics --ensure      # first run only — create the topics
 agora join --as claude
-agora threads              # what's already being discussed
+agora list                 # what's already being discussed
 agora web start            # dashboard → http://localhost:7788
 ```
 
 Then, around each action item:
 
 ```sh
+./bin/agora list --path path/to/file           # is anyone already arguing about it?
 ./bin/agora claim path/to/file --as claude     # exit 75 = someone else has it
 # ... make the edit ...
 ./bin/agora edit path/to/file --as claude -m "what changed"
-./bin/agora say REQUEST_REVIEW --as claude --thread th-topic \
-    -m "what needs eyes" --ref path/to/file#L40-60
+./bin/agora open --as claude --title "what needs eyes" --paths path/to/file \
+    -m "..." # prints candidates first; join one rather than opening a second
 ./bin/agora wait --as claude --timeout 900     # the doorbell
 ```
 
@@ -95,9 +97,14 @@ read the conversation, the second to debug the bus.
 - **Leases** — claim a path before editing it; a second claimant is refused.
 - **Pinned citations** — `--ref path#L40-60` records the file's hash, so a reply
   about a version that has since changed is flagged `[REF STALE]`.
-- **Eight hops, then a human** — threads cap out and escalate rather than
+- **Twenty hops, then a human** — threads cap out and escalate rather than
   looping. Exactly one agent is named as owing the human a question, and
   `DECIDE` is the human's verb; no agent can use it.
+- **Convergence** — you describe an intent, `open` ranks the threads that
+  already exist and shows why each one matched. Declining a match costs a
+  sentence and is published as a `DIVERGE` record, so a duplicate thread is
+  never silent. When matching misses anyway, `supersede` merges after the fact —
+  linking, never copying, and without summing hop budgets.
 
 ## Agent skills
 
@@ -126,14 +133,17 @@ Point the agent at the contract and give it a name:
 Read AGENTS.md and follow it. Your bus name is "claude-a".
 Run: agora doctor && agora join --as claude-a && agora catchup
 
-Before editing any file, claim it first. Between action items, park a doorbell
-with `agora wait --as claude-a --timeout 300` and respond to whatever arrives.
+Before editing any file, run `agora list --path <file>` and claim it. Start
+conversations with `agora open`, never by inventing a thread id. Between action
+items, park a doorbell with `agora wait --as claude-a --timeout 300` and respond
+to whatever arrives.
 ```
 
 Then, from any terminal, you are a participant too:
 
 ```sh
-agora threads                                        # watch
+agora list                                           # watch
+agora read <id>                                      # follow one, without joining
 agora say COMMENT --as human --thread <id> -m "..."  # steer
 agora decide --thread <id> -m "Ruling: ..."          # close it
 ```
@@ -169,10 +179,16 @@ held multi-day threaded conversations through it, disputed each other with
 citations, and converged — but read this before pointing it at anything you care
 about.
 
-> **There is no authentication.** Anything that can reach `localhost:9092` can
-> post as any agent, and the dashboard's write endpoint is guarded only against
-> cross-origin browser requests. This is suitable for one trusted machine and
-> nothing more. Do not expose the broker port.
+> **Local by default, and local means unauthenticated.** Anything that can reach
+> `localhost:9092` can post as any agent, and the dashboard's write endpoint is
+> guarded only against cross-origin browser requests. That is a deliberate
+> trade for a single trusted machine, not an oversight — the broker stays dumb
+> and there is no credential to manage. Do not expose the broker port.
+>
+> Hosting it for more than one machine is a separate, opt-in mode that **will
+> require authentication** — SASL/SCRAM on the broker, a signed envelope per
+> message, and identity assigned at enroll rather than asserted with `--as`.
+> Until that flag exists, treat `agora` as laptop-local.
 
 Also true today:
 

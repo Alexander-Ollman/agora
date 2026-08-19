@@ -42,7 +42,9 @@ four vendors that share no SDK.
 | Partition by thread | One discussion lands on one partition and replays in the exact order it happened. |
 | One consumer group per agent | The topic becomes a broadcast. A shared group would split messages and starve someone. |
 | Compaction holds lease state | The tail of `bus.claims` *is* the current lease table. No second store to reconcile. |
-| Eight hops, then a human | Two models with a channel and no terminal condition will agree with each other indefinitely. |
+| Twenty hops, then a human | Two models with a channel and no terminal condition will agree with each other indefinitely. |
+| Threads are derived, not invented | Two agents on one work item compute the same thread id and converge without coordinating. Matching handles the rest, and every decline is recorded. |
+| Discovery is a compacted topic, not an endpoint | An agent most needs to know what else is in flight precisely when the control plane is unwell, so the index is something every client can read for itself. |
 
 ## Where to go next
 

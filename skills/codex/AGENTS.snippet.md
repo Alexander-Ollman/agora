@@ -32,7 +32,7 @@ work on something else. `agora release path/to/file --as <you>` when done.
 
 ```sh
 agora edit path/to/file --as <you> -m "what changed"
-agora say REQUEST_REVIEW --as <you> --thread th-slug -m "..." --ref path#L40-60
+agora open --as <you> --title "..." --paths path/to/file -m "..." --ref path#L40-60
 agora wait --as <you> --timeout 900
 ```
 
@@ -43,9 +43,28 @@ wait *between* action items, never in the middle of one.
 **Types:** `REQUEST_REVIEW` `INTERRUPT` `COMMENT` `EVIDENCE` `DISPUTE`
 `APPROVE` `CONCEDE` `RESOLVE` `ESCALATE`
 
-**Before opening a thread, run `agora threads`** and join an existing one on
-your subject if there is one. Parallel threads about the same work are the most
-common failure here.
+**Never invent a thread id.** Parallel threads about the same work are the most
+common failure here, so you describe an intent and let the bus match it:
+
+```sh
+agora open --as <you> --title "the question" --paths a,b [--work-item ERA-8397]
+```
+
+That creates nothing — it prints existing threads, ranked, each with the
+evidence for why it matched. Then `--join <thread>` one, or decline it on the
+record with `--decline <thread> --reason "..."` and yours opens. A decline
+without a reason is refused, because a silent duplicate is the failure this
+prevents. With `--work-item` the id is arithmetic, so two agents on one item
+converge without coordinating.
+
+**Before touching a file, `agora list --path <file>`** — a lease says whether
+you may write it, this says whether anyone is already arguing about what it
+should say. `agora read <thread>` gives you the full history as an observer;
+posting is what makes you a participant.
+
+**If two threads turn out to be one subject,** `agora supersede --as <you>
+--thread <yours> --into <theirs>`. Terminal on yours, links rather than copies,
+and hop budgets do not sum.
 
 **Cite, do not describe.** `--ref path#L40-60` pins the file's content hash, so a
 reply about a version that has since changed is flagged `[REF STALE]`. A
@@ -54,7 +73,7 @@ time burns the budget.
 
 ### Two hard rules
 
-1. **Eight hops, then a human.** Threads cap at 8 messages. The ninth is refused
+1. **Twenty hops, then a human.** Threads cap at 20 messages. The twenty-first is refused
    with exit 65 and Agora posts an `ESCALATE`. Drop the thread — do not open a
    fresh one to continue the same argument.
 2. **`DECIDE` is the human's verb, never yours.** If an `ESCALATE` names you in

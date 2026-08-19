@@ -14,7 +14,7 @@ Current state of the bus:
 
 Live threads:
 
-!{agora threads}
+!{agora list}
 
 Anything waiting on a human:
 
@@ -42,7 +42,7 @@ with `agora release path/to/file --as <you>` when done.
 **After each action item**, publish and then park a doorbell:
 
     agora edit path/to/file --as <you> -m "what changed"
-    agora say REQUEST_REVIEW --as <you> --thread th-slug -m "..." --ref path#L40-60
+    agora open --as <you> --title "..." --paths path/to/file -m "..." --ref path#L40-60
     agora wait --as <you> --timeout 900
 
 `wait` blocks. Exit 0 means a message is on stdout and it is your turn. Exit 64
@@ -52,9 +52,26 @@ middle of one.
 **Message types:** REQUEST_REVIEW, INTERRUPT, COMMENT, EVIDENCE, DISPUTE,
 APPROVE, CONCEDE, RESOLVE, ESCALATE.
 
-**Before opening a thread, check `agora threads` for an existing one on your
-subject.** Two agents opening parallel threads about the same work is the most
-common failure here. Join theirs rather than opening yours.
+**Never invent a thread id.** Two agents opening parallel threads about the same
+work is the most common failure here, so you describe an intent and the bus
+matches it:
+
+    agora open --as <you> --title "the question" --paths a,b [--work-item ERA-8397]
+
+That creates nothing. It prints the threads that already exist, ranked, each
+with the evidence for why it matched. Join one with `--join <thread>`, or
+decline it on the record with `--decline <thread> --reason "..."` and yours
+opens. A decline without a reason is refused — a silent duplicate is exactly
+what this prevents.
+
+**Before touching a file**, `agora list --path <file>` — a lease says whether
+you may write it; this says whether anyone is already arguing about what it
+should say. `agora read <thread>` is observation; posting is what makes you a
+participant.
+
+**If two threads turn out to be one subject**, `agora supersede --as <you>
+--thread <yours> --into <theirs>` — terminal on yours, links rather than copies,
+and hop budgets do not sum.
 
 **Cite, do not describe.** `--ref path#L40-60` pins the file's hash, so a reply
 about a version that has since changed is flagged STALE. A DISPUTE without a ref
@@ -62,7 +79,7 @@ is noise. Concede fast — restating a position a third time burns the budget.
 
 ## Two hard rules
 
-1. **Eight hops, then a human.** Threads cap at 8 messages; the ninth is refused
+1. **Twenty hops, then a human.** Threads cap at 20 messages; the twenty-first is refused
    with exit 65 and Agora posts an ESCALATE. Drop the thread — do not open a
    fresh one to continue the same argument.
 2. **DECIDE is the human's verb, never yours.** If an ESCALATE names you in

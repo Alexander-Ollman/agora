@@ -890,11 +890,11 @@
       --paths w5-infrastructure-project-review.md,docs/protocol.md</span>
 
 CANDIDATES (2)
-  thread://linear/ERA-8397          <span class="w">strong</span>   open · hop 3/8 · claude-a, codex-a
+  thread://linear/ERA-8397          <span class="w">strong</span>   open · hop 3/20 · claude-a, codex-a
     matched: work item derived from branch · 2 of 2 paths overlap
     last:    "ERA-8397 is a pending disposition, not a ruling…"
 
-  th-a0-execution                   weak     open · hop 2/8 · claude-a
+  th-a0-execution                   weak     open · hop 2/20 · claude-a
     matched: 1 of 2 paths overlap
     last:    "A0 executed and logged. Highlights: all 4 status flips…"
 
@@ -1017,7 +1017,7 @@ $ agora open --title "…" --paths … \
 <section id="s10">
   <div class="num">§ 10</div>
   <h2>Open questions</h2>
-  <p>Six of the original eight closed on 2026-08-15. What is recorded here is the reasoning, so a later reader can tell a decision from an assumption.</p>
+  <p>Seven of the original eight closed, the last of them on 2026-08-16. What is recorded here is the reasoning, so a later reader can tell a decision from an assumption.</p>
 
   <h3>Closed</h3>
   <div class="tw"><table>
@@ -1025,6 +1025,7 @@ $ agora open --title "…" --paths … \
     <tbody>
       <tr><td>1</td><td>Where does it live?</td><td><strong>Its own public repo</strong>, built from source; a scoped npm package later. The originally-cited consumers are defunct and a successor service is being scoped on top of this, so there is no monorepo to be awkward about.</td></tr>
       <tr><td>2</td><td>What executes detached turns?</td><td><strong>A service derived from this library</strong>, not an external orchestrator. Cleaner than the alternative: it removes the dependency that would have coupled bus availability to a platform API's.</td></tr>
+      <tr><td>3</td><td>The name</td><td><strong>Agora</strong>, ratified 2026-08-16. Two agent sessions ran the naming study on this bus and converged on it across <code>th-name-ratify</code> and <code>th-name-reconsider</code>; the repo is published under it. <code>consensus</code> was rejected as claiming the opposite of the system's defining property — that agents <em>fail</em> to agree and escalate. <code>floor</code> survives as a candidate CLI verb, not a name.</td></tr>
       <tr><td>5</td><td>Who pays for a spawn?</td><td><strong>Operator/executor setting</strong> — a per-thread cap on spend and turn count, configured by the operator rather than negotiated by agents.</td></tr>
       <tr><td>6</td><td>Can an agent refuse a spawn?</td><td><strong>Operator-side backoff</strong>, no new verb (<a href="#s3">§3</a>). After N consecutive <code>64</code>s the operator stops spawning that agent on that thread.</td></tr>
       <tr><td>7</td><td>Leases held by a dead detached agent</td><td><strong>The lease binds to the turn</strong> and auto-releases on exit (<a href="#s3">§3</a>). <code>pulse</code> extends within a long turn; 30 minutes becomes a ceiling rather than the norm.</td></tr>
@@ -1036,7 +1037,6 @@ $ agora open --title "…" --paths … \
   <div class="tw"><table>
     <thead><tr><th>#</th><th>Question</th><th>State</th></tr></thead>
     <tbody>
-      <tr><td>3</td><td>The name</td><td><strong>Live.</strong> <code>consensus</code> is a poor fit — in distributed systems it names Raft/Paxos agreement, and it claims the opposite of this system's defining property, which is that agents <em>fail</em> to agree and escalate. Leading candidates: <strong>Agora</strong> (public assembly; most legible), <strong>Boule</strong> (the council that referred upward what it could not settle — the escalation model, in the name; npm-free), <strong>Keryx</strong> (the herald who summoned the assembly). <code>floor</code> is weak as a repo name and strong as a CLI verb.</td></tr>
       <tr><td>4</td><td>Operator HA</td><td><strong>Softened, not closed.</strong> HA is not required, because agents now degrade rather than stall (<a href="#s2">§2</a>). A single instance is acceptable provided the degradation policy is real and tested — untested fallback is how the prototype's dashboard came to die with a background task.</td></tr>
       <tr><td>9</td><td>Is the memory work needed at all?</td><td><strong>New, and gating.</strong> If replay is under ~10% of total turn cost at realistic lengths, the answer is prompt caching alone and <a href="#s8">§8</a> is premature. Measure first.</td></tr>
       <tr><td>10</td><td>How aggressive should thread matching be?</td><td><strong>New.</strong> Same shape as the hop cap: a dial with a bad failure at each end (<a href="#s9">§9</a>). Too loose fragments the conversation, too tight conflates unrelated arguments. Unlike the hop cap there is a usable signal — the <code>DIVERGE</code> rate against a given candidate tells you the matcher is wrong rather than the agents. Ship deliberately loose, tighten on that signal.</td></tr>
@@ -1050,7 +1050,7 @@ $ agora open --title "…" --paths … \
 </section>
 
 <footer>
-  Working draft, <code>agora/1</code>. Design only — nothing in §2 through §7 is implemented. The prototype it builds on is running locally: Redpanda v26.2.1, five topics, a CLI and a dashboard, with two agent sessions having held real conversations through it. Decisions of 2026-08-14 recorded in <code>docs/plans/design-decisions.md</code>.
+  Working draft, <code>agora/1</code>. Design only — nothing in §2 through §7 is implemented. The prototype it builds on is running locally: Redpanda v26.2.1, six topics, a CLI and a dashboard, with two agent sessions having held real conversations through it. §​9’s convergence primitives — <code>bus.index</code>, intent-matched <code>open</code>, recorded <code>DIVERGE</code>, and <code>SUPERSEDE</code> — have since been built; the rest of §2–§7 has not. Decisions of 2026-08-14 recorded in <code>docs/plans/design-decisions.md</code>.
 </footer>
 
 </div>

@@ -25,19 +25,44 @@ const path = require('path');
 const CONTAINER = process.env.AGORA_CONTAINER || 'agora-redpanda';
 const REPO = path.resolve(__dirname, '..');
 
+// Topic names carry a prefix so a test run can stand up an entire parallel bus
+// (`AGORA_TOPIC_PREFIX=test-a1b2.`) and drop it afterwards. Kafka cannot delete
+// individual records, so the only safe way to exercise the real broker is to
+// exercise a throwaway copy of it.
+const PREFIX = process.env.AGORA_TOPIC_PREFIX || 'bus.';
+
 const T = {
-  threads:   'bus.threads',
-  edits:     'bus.edits',
-  claims:    'bus.claims',
-  decisions: 'bus.decisions',
-  presence:  'bus.presence',
+  threads:   PREFIX + 'threads',
+  edits:     PREFIX + 'edits',
+  claims:    PREFIX + 'claims',
+  decisions: PREFIX + 'decisions',
+  presence:  PREFIX + 'presence',
+  index:     PREFIX + 'index',
 };
 
-// What a parked `wait` listens to. Presence is excluded on purpose — heartbeat
-// traffic would wake every agent constantly and drown the actual conversation.
+/**
+ * How each topic is created. Partition counts and cleanup policy are protocol,
+ * not deployment detail: `threads` is partitioned by thread so a conversation
+ * stays ordered, and the compacted topics are state tables that happen to be
+ * logs.
+ */
+const TOPIC_SPEC = [
+  [T.threads,   ['--partitions', '6', '--config', 'retention.ms=604800000']],
+  [T.edits,     ['--partitions', '1', '--config', 'retention.ms=2592000000']],
+  [T.claims,    ['--partitions', '1', '--config', 'cleanup.policy=compact']],
+  [T.decisions, ['--partitions', '1', '--config', 'cleanup.policy=compact']],
+  [T.presence,  ['--partitions', '1', '--config', 'cleanup.policy=compact',
+                 '--config', 'retention.ms=3600000']],
+  [T.index,     ['--partitions', '1', '--config', 'cleanup.policy=compact']],
+];
+
+// What a parked `wait` listens to. Presence and index are excluded on purpose,
+// for the same reason: both are bookkeeping. Heartbeats would wake every agent
+// constantly, and a descriptor update is a consequence of a message that has
+// already rung the bell.
 const WATCH = [T.threads, T.edits, T.claims, T.decisions];
 
-const HOP_CAP = 8;
+const HOP_CAP = Number(process.env.AGORA_HOP_CAP) || 20;
 const DEFAULT_TTL_MIN = 30;
 const DEFAULT_WAIT_SEC = 900;
 
@@ -45,7 +70,10 @@ const THREAD_TYPES = new Set([
   'REQUEST_REVIEW', 'COMMENT', 'EVIDENCE', 'DISPUTE',
   'APPROVE', 'CONCEDE', 'INTERRUPT', 'RESOLVE', 'ESCALATE', 'DECIDE',
 ]);
-const TERMINAL = new Set(['RESOLVE', 'ESCALATE', 'DECIDE']);
+// SUPERSEDE is terminal but deliberately absent from THREAD_TYPES: it needs a
+// target to be meaningful, so it gets its own command rather than being one
+// more thing you can `say` into the void.
+const TERMINAL = new Set(['RESOLVE', 'ESCALATE', 'DECIDE', 'SUPERSEDE']);
 const OPENERS = new Set(['REQUEST_REVIEW', 'INTERRUPT']);
 
 const EXIT = { OK: 0, TIMEOUT: 64, REFUSED: 65, NOBROKER: 69, DENIED: 75 };
@@ -170,6 +198,116 @@ function leases() {
   return live;
 }
 
+/* ── the index (compacted topic → one descriptor per thread) ───────── */
+
+/**
+ * Discovery has to keep working when nothing else does. An agent most needs to
+ * know what else is in flight precisely when the control plane is unwell, so
+ * the index is a compacted topic every client can read for itself rather than
+ * an endpoint on a service that can be down. Descriptors are keyed by thread,
+ * so compaction leaves exactly one per conversation and the whole index is
+ * cheap to pull and filter locally.
+ *
+ * DIVERGE records share the topic under their own key namespace — one record
+ * per (new thread, declined candidate) pair, which is also exactly the dedup
+ * you want if the same call gets made twice.
+ */
+function indexRead() {
+  const desc = new Map();
+  const diverges = [];
+  for (const e of readAll(T.index)) {
+    if (e.type === 'DIVERGE') diverges.push(e);
+    else if (e.thread) desc.set(e.thread, e);
+  }
+  return { desc, diverges };
+}
+
+/** Tokens used for weak title/tag matching. Short words carry no signal. */
+function tokens(s) {
+  return new Set(String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2));
+}
+
+/**
+ * Rebuild a thread's descriptor from the log and publish it.
+ *
+ * The publishing client owns this, not the operator — that is what keeps
+ * discovery working with no operator running at all. Everything here is derived
+ * from messages that are already on the bus, except the fields a human or agent
+ * supplied at open time (title, work item, tags), which are carried forward
+ * from the previous descriptor.
+ */
+function refreshDescriptor(thread, extra = {}) {
+  const prev = indexRead().desc.get(thread) || {};
+  const msgs = readAll(T.threads).filter((e) => e.thread === thread)
+    .sort((a, b) => (a.ts < b.ts ? -1 : 1));
+  const edits = readAll(T.edits).filter((e) => e.thread === thread);
+
+  const participants = [];
+  for (const m of msgs) {
+    const a = m.from && m.from.agent;
+    if (a && a !== 'agora' && !participants.includes(a)) participants.push(a);
+  }
+
+  const paths = new Set(prev.paths || []);
+  for (const m of msgs) for (const r of m.refs || []) if (r.path) paths.add(r.path);
+  for (const e of edits) if (e.subject) paths.add(e.subject);
+  for (const p of extra.paths || []) paths.add(p);
+
+  const decided = msgs.find((m) => m.type === 'DECIDE');
+  const term = decided || msgs.find((m) => TERMINAL.has(m.type));
+  const status = extra.status
+    || (term ? (term.type === 'DECIDE' ? 'decided'
+      : term.type === 'ESCALATE' ? 'escalated'
+        : term.type === 'SUPERSEDE' ? 'superseded' : 'resolved')
+      : 'open');
+
+  const opener = msgs[0];
+  const d = {
+    id: mkid(), ts: now(), type: 'DESCRIPTOR', thread,
+    title: extra.title || prev.title
+      || (opener && opener.body ? opener.body.slice(0, 120) : null),
+    work_item: extra.work_item || prev.work_item || null,
+    status,
+    hop: msgs.reduce((m, e) => Math.max(m, e.hop || 0), 0),
+    participants,
+    paths: [...paths],
+    tags: extra.tags || prev.tags || [],
+    superseded_by: extra.superseded_by || prev.superseded_by || null,
+    absorbed: extra.absorbed || prev.absorbed || [],
+    opened_at: prev.opened_at || (opener ? opener.ts : now()),
+    last_at: msgs.length ? msgs[msgs.length - 1].ts : now(),
+  };
+  produce(T.index, thread, d);
+  return d;
+}
+
+/**
+ * Open threads that already cite a path.
+ *
+ * This is the collision the lease model misses: two agents can each edit a file
+ * nobody has claimed while a live conversation is deciding what that file
+ * should say. A lease answers "may I write"; this answers "is anyone already
+ * arguing about it", which is the more useful question and the one that was
+ * unanswerable before the index existed.
+ */
+function threadsTouching(p) {
+  const { desc } = indexRead();
+  return [...desc.values()].filter(
+    (d) => d.status === 'open' && (d.paths || []).includes(p),
+  );
+}
+
+/** Descriptor refresh must never be able to fail a message that was delivered.
+ *  The message is the truth; the descriptor is a convenience over it, and a
+ *  wrong descriptor costs a missed convergence, never corruption. */
+function refreshQuietly(thread, extra) {
+  try { return refreshDescriptor(thread, extra); }
+  catch (err) {
+    process.stderr.write(`agora: warning — index not updated for ${thread}: ${err.message}\n`);
+    return null;
+  }
+}
+
 /* ── presence ──────────────────────────────────────────────────────── */
 
 const PRESENCE_STALE_MIN = 20;
@@ -235,6 +373,7 @@ function render(e, me) {
   if (e.subject) head.push(`path=${e.subject}`);
   const out = [head.join('  ')];
   if (e.reply_to) out.push(`  reply-to: ${e.reply_to}`);
+  if (e.into) out.push(`  superseded-by: ${e.into}  (read it — this thread's evidence travels with it)`);
   if (e.body) out.push(`  ${e.body}`);
   for (const r of e.refs || []) {
     const tag = r.stale === 'deleted' ? '  [REF DELETED SINCE]'
@@ -267,14 +406,47 @@ function render(e, me) {
 
 const cmds = {};
 
+/** Topic names that actually exist. Parsed rather than substring-matched, so a
+ *  prefixed test bus cannot be mistaken for the real one. */
+function existingTopics() {
+  const out = rpk(['topic', 'list']).stdout || '';
+  return new Set(
+    out.split('\n').slice(1).map((l) => l.trim().split(/\s+/)[0]).filter(Boolean),
+  );
+}
+
+/**
+ * Topic creation used to live only in the getting-started doc, which means the
+ * first thing a new install could get wrong was the one thing the protocol
+ * depends on — partition counts and compaction policy. It belongs in the tool.
+ */
+cmds.topics = (flags) => {
+  const have = existingTopics();
+  const missing = TOPIC_SPEC.filter(([n]) => !have.has(n));
+  if (!flags.ensure) {
+    for (const [n, spec] of TOPIC_SPEC) {
+      console.log(`${have.has(n) ? 'ok      ' : 'MISSING '}${n.padEnd(20)} ${spec.join(' ')}`);
+    }
+    if (missing.length) console.log(`\n${missing.length} missing — create with: agora topics --ensure`);
+    return;
+  }
+  if (!missing.length) return console.log(`all ${TOPIC_SPEC.length} topics present — nothing to do`);
+  for (const [n, spec] of missing) {
+    const res = rpk(['topic', 'create', n, ...spec]);
+    if (res.status !== 0) die(EXIT.NOBROKER, `create ${n} failed: ${(res.stderr || res.stdout || '').trim()}`);
+    console.log(`created ${n}  ${spec.join(' ')}`);
+  }
+};
+
 cmds.doctor = () => {
   const health = rpk(['cluster', 'health']);
   if (health.status !== 0) die(EXIT.NOBROKER, 'broker not reachable — try: docker compose up -d');
   const healthy = /Healthy:\s+true/.test(health.stdout);
-  const list = rpk(['topic', 'list']).stdout || '';
-  const missing = Object.values(T).filter((t) => !list.includes(t));
+  const missing = TOPIC_SPEC.map(([n]) => n).filter((t) => !existingTopics().has(t));
   console.log(`broker    ${healthy ? 'healthy' : 'UNHEALTHY'}  (${CONTAINER})`);
-  console.log(`topics    ${missing.length ? 'MISSING: ' + missing.join(', ') : 'all 5 present'}`);
+  console.log(`topics    ${missing.length
+    ? `MISSING: ${missing.join(', ')}  → agora topics --ensure`
+    : `all ${TOPIC_SPEC.length} present`}`);
   console.log(`repo      ${REPO}`);
   console.log(`agent     ${process.env.AGORA_AGENT || '(unset — pass --as)'}`);
   const l = leases();
@@ -296,13 +468,21 @@ cmds.join = (flags) => {
 cmds.claim = (flags, args) => {
   const agent = agentName(flags);
   const target = args[0];
-  if (!target) die(EXIT.REFUSED, 'usage: agora claim <path> [--ttl 30m]');
+  if (!target) die(EXIT.REFUSED, 'usage: agora claim <path> [--ttl 30m] [--thread T]');
   const held = leases().get(target);
   if (held && held.from.agent !== agent) {
     const left = Math.round((new Date(held.expires_at) - Date.now()) / 60000);
     process.stderr.write(
       `agora: DENIED — ${target} held by ${held.from.agent}, ~${left}m remaining\n`,
     );
+    // A refusal that only refuses makes the agent guess. One that names the
+    // conversation turns the refusal into a routing instruction.
+    for (const d of threadsTouching(target)) {
+      process.stderr.write(
+        `agora:   discussing in ${d.thread} (hop ${d.hop}/${HOP_CAP}, ${(d.participants || []).join(', ')})`
+        + ` — agora read ${d.thread}\n`,
+      );
+    }
     process.exit(EXIT.DENIED);
   }
   const mins = parseTtl(flags.ttl);
@@ -311,7 +491,9 @@ cmds.claim = (flags, args) => {
     subject: target,
     expires_at: new Date(Date.now() + mins * 60000).toISOString(),
     sha256_at_claim: shaOf(target),
+    thread: flags.thread || null,
   });
+  if (flags.thread) refreshQuietly(flags.thread, { paths: [target] });
   console.log(`GRANTED  ${target}  → ${agent}  (ttl ${mins}m, expires ${e.expires_at})`);
 };
 
@@ -340,6 +522,12 @@ cmds.edit = (flags, args) => {
   if (!held) {
     process.stderr.write(`agora: warning — no lease held on ${target}\n`);
   }
+  for (const d of threadsTouching(target)) {
+    if (d.thread === flags.thread) continue;               // you are in that thread already
+    process.stderr.write(
+      `agora: warning — ${d.thread} is open and cites ${target} — agora read ${d.thread}\n`,
+    );
+  }
   const sha = shaOf(target);
   if (sha === null) die(EXIT.REFUSED, `no such file: ${target}`);
   produce(T.edits, target, {
@@ -348,12 +536,16 @@ cmds.edit = (flags, args) => {
     body: flags.m || flags.message || null,
     refs: [{ path: target, lines: null, sha256: sha }],
   });
+  if (flags.thread) refreshQuietly(flags.thread, { paths: [target] });
   console.log(`logged EDIT  ${target}  @${sha}`);
 };
 
 cmds.say = (flags, args) => {
   const agent = agentName(flags);
   const type = String(args[0] || '').toUpperCase();
+  if (type === 'SUPERSEDE') {
+    die(EXIT.REFUSED, 'SUPERSEDE needs a target: agora supersede --thread <source> --into <target>');
+  }
   if (!THREAD_TYPES.has(type)) {
     die(EXIT.REFUSED, `unknown type "${args[0]}" — one of: ${[...THREAD_TYPES].join(', ')}`);
   }
@@ -390,6 +582,7 @@ cmds.say = (flags, args) => {
       digest: positions,
       ask_human: owner,
     });
+    refreshQuietly(thread, { status: 'escalated' });
     process.stderr.write(
       `agora: REFUSED — hop ${hop} exceeds cap ${HOP_CAP}. ESCALATE posted; drop the thread.\n`,
     );
@@ -412,6 +605,7 @@ cmds.say = (flags, args) => {
     thread, hop, reply_to: flags['reply-to'] || null,
     body, refs, ask_human: ask,
   });
+  refreshQuietly(thread);
   console.log(`sent ${type} on ${thread} (hop ${hop}/${HOP_CAP})`);
   if (type === 'ESCALATE') {
     console.log(ask === agent
@@ -446,6 +640,7 @@ cmds.decide = (flags, args) => {
     id: mkid(), ts: now(), type: 'DECISION', from,
     thread: flags.thread, body,
   });
+  refreshQuietly(flags.thread, { status: 'decided' });
   console.log(`DECIDE recorded on ${flags.thread}${via ? ` (relayed via ${via})` : ''}`);
   console.log(`ratified on ${T.decisions} (key=${flags.thread})`);
 };
@@ -665,15 +860,330 @@ cmds.web = (flags, args) => {
   die(EXIT.REFUSED, 'usage: agora web start|stop|restart|status');
 };
 
+/* ── convergence ───────────────────────────────────────────────────── */
+
+function slug(str) {
+  return String(str || '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    .split('-').filter(Boolean).slice(0, 5).join('-');
+}
+
+/**
+ * A thread id is derived, never invented, whenever there is anything to derive
+ * it from. Two agents working the same item compute the same id independently
+ * and land in the same conversation without coordinating — convergence as
+ * arithmetic rather than as lookup. Only when there is no work item does the
+ * title get slugified, and that is the case where matching has to do the work.
+ */
+function deriveThreadId(title, workItem) {
+  if (workItem) {
+    const w = String(workItem);
+    if (/^[a-z][a-z0-9+.-]*:\/\//.test(w)) return w;      // already an address
+    return `thread://${process.env.AGORA_TRACKER || 'work'}/${w}`;
+  }
+  const sl = slug(title);
+  if (!sl) die(EXIT.REFUSED, '--title needs some words in it');
+  return `th-${sl}`;
+}
+
+function csv(v) {
+  if (v === undefined || v === true) return [];
+  return String(v).split(',').map((x) => x.trim()).filter(Boolean);
+}
+
+/**
+ * Rank existing threads against an intent, deterministic tiers first.
+ *
+ * Each candidate carries why it matched. A bare similarity score is
+ * unadjudicable — the agent is being asked to make a judgement, so it needs the
+ * grounds, not a number.
+ */
+function rankCandidates(intent) {
+  const { desc } = indexRead();
+  const out = [];
+  const wantTokens = tokens(`${intent.title} ${intent.tags.join(' ')}`);
+
+  for (const d of desc.values()) {
+    if (d.status !== 'open') continue;
+    if (d.thread === intent.thread) {
+      out.push({ d, tier: 'exact', why: ['the derived thread id is this thread'] });
+      continue;
+    }
+    if (intent.work_item && d.work_item && d.work_item === intent.work_item) {
+      out.push({ d, tier: 'exact', why: [`same work item ${intent.work_item}`] });
+      continue;
+    }
+    const overlap = (d.paths || []).filter((x) => intent.paths.includes(x));
+    if (overlap.length) {
+      out.push({
+        d,
+        tier: 'strong',
+        why: [`${overlap.length} of ${intent.paths.length} paths overlap: ${overlap.join(', ')}`],
+      });
+      continue;
+    }
+    const shared = [...wantTokens].filter((w) => tokens(`${d.title} ${(d.tags || []).join(' ')}`).has(w));
+    if (shared.length >= 2) {
+      out.push({ d, tier: 'weak', why: [`title/tag overlap: ${shared.slice(0, 5).join(', ')}`] });
+    }
+  }
+  const rank = { exact: 0, strong: 1, weak: 2 };
+  out.sort((a, b) => rank[a.tier] - rank[b.tier]
+    || String(b.d.last_at || '').localeCompare(String(a.d.last_at || '')));
+  return out;
+}
+
+function printCandidates(cands) {
+  console.log(`CANDIDATES (${cands.length})`);
+  for (const c of cands) {
+    const d = c.d;
+    console.log(`  ${d.thread.padEnd(34)}${c.tier.padEnd(8)}${d.status} · hop ${d.hop}/${HOP_CAP}`
+      + ` · ${(d.participants || []).join(', ') || 'nobody yet'}`);
+    if (d.title) console.log(`    title:   ${d.title.slice(0, 96)}`);
+    for (const w of c.why) console.log(`    matched: ${w}`);
+  }
+}
+
+/**
+ * Which tier is allowed to block a new thread.
+ *
+ * This is a dial with a bad failure at each end, and the ends are not
+ * symmetric: fragmentation is recoverable — that is what SUPERSEDE is for —
+ * and a thread carrying two tangled arguments is not. So the default is the
+ * loose end. Tighten it on evidence: a low DIVERGE rate against a given tier
+ * means the matcher could be trusted with more.
+ */
+const BLOCK_TIER = process.env.AGORA_MATCH_BLOCK || 'exact';
+const BLOCKS = { none: [], exact: ['exact'], strong: ['exact', 'strong'] }[BLOCK_TIER]
+  || ['exact'];
+
+cmds.open = (flags, args) => {
+  const agent = agentName(flags);
+
+  // Reading a thread is not joining it. `--join` prints the history and stops;
+  // what makes you a participant is speaking, which is how conversation works.
+  const joining = flags.join || (args[0] && !flags.title ? args[0] : null);
+  if (joining) return cmds.read({ ...flags }, [joining]);
+
+  if (!flags.title) {
+    die(EXIT.REFUSED,
+      'usage: agora open --as A --title "..." [--paths a,b] [--work-item W] [-m "opening message"]');
+  }
+  const intent = {
+    title: String(flags.title),
+    paths: csv(flags.paths),
+    tags: csv(flags.tags),
+    work_item: flags['work-item'] || null,
+    thread: deriveThreadId(flags.title, flags['work-item']),
+  };
+  for (const p of intent.paths) if (shaOf(p) === null) die(EXIT.REFUSED, `--paths names a missing file: ${p}`);
+
+  const cands = rankCandidates(intent);
+  const declined = [].concat(flags.decline || []).filter((x) => typeof x === 'string');
+
+  // Declining the thread your own intent derives is not divergence, it is a
+  // no-op that reads like one: the "new" thread would be the same id, so the
+  // decline would be recorded and then immediately contradicted by writing a
+  // second opener into the thread you just declined.
+  if (declined.includes(intent.thread)) {
+    die(EXIT.REFUSED,
+      `${intent.thread} is the id this intent derives — declining it would reopen the same `
+      + 'thread. Change --title, or give it a distinct --work-item.');
+  }
+
+  const blocking = cands.filter((c) => BLOCKS.includes(c.tier) && !declined.includes(c.d.thread));
+
+  if (blocking.length && !declined.length) {
+    printCandidates(cands);
+    console.log('');
+    console.log('Nothing was created. Join one:');
+    console.log(`  agora open --as ${agent} --join ${blocking[0].d.thread}`);
+    console.log('…or decline it, on the record:');
+    console.log(`  agora open --as ${agent} --title "${intent.title}" `
+      + `--decline ${blocking[0].d.thread} --reason "why this is a different question"`);
+    return;
+  }
+  if (blocking.length) {
+    die(EXIT.REFUSED,
+      `still matched by ${blocking.map((c) => c.d.thread).join(', ')} — decline each one or join it`);
+  }
+  if (declined.length && !flags.reason) {
+    die(EXIT.REFUSED, '--decline needs --reason "..." — a silent duplicate is the failure this prevents');
+  }
+
+  // A declined suggestion is published, not discarded. It stops duplicate
+  // threads being silent, and it is the only real signal for whether matching
+  // is tuned right — repeated declines against one candidate mean the matcher
+  // is wrong, not the agents.
+  for (const cand of declined) {
+    produce(T.index, `diverge/${intent.thread}/${cand}`, {
+      id: mkid(), ts: now(), type: 'DIVERGE', from: { agent },
+      thread: intent.thread, declined: cand, reason: String(flags.reason),
+    });
+  }
+
+  refreshDescriptor(intent.thread, {
+    title: intent.title, work_item: intent.work_item, tags: intent.tags,
+    paths: intent.paths, status: 'open',
+  });
+
+  if (cands.length) {
+    console.log(`(${cands.length} candidate${cands.length > 1 ? 's' : ''} considered, `
+      + `${declined.length} declined on the record)`);
+  }
+  console.log(`OPENED  ${intent.thread}`);
+
+  const body = flags.m || flags.message;
+  if (body) return cmds.say({ ...flags, thread: intent.thread }, ['REQUEST_REVIEW']);
+  console.log(`  next: agora say REQUEST_REVIEW --as ${agent} --thread ${intent.thread} -m "..."`);
+};
+
+/** Observer read. Follows supersede pointers so a merged argument keeps its
+ *  evidence — the messages stay where they were published and nothing is
+ *  copied or reordered. */
+cmds.read = (flags, args) => {
+  const id = args[0] || flags.thread;
+  if (!id) die(EXIT.REFUSED, 'usage: agora read <thread>');
+  const { desc } = indexRead();
+  const d = desc.get(id);
+  const sources = [id, ...((d && d.absorbed) || [])];
+  const msgs = readAll(T.threads)
+    .filter((e) => sources.includes(e.thread))
+    .sort((a, b) => (a.ts < b.ts ? -1 : 1))
+    .map(markStale);
+  if (!msgs.length && !d) die(EXIT.REFUSED, `no such thread: ${id}`);
+
+  if (flags.json) return console.log(JSON.stringify({ descriptor: d || null, messages: msgs }));
+  if (d) {
+    console.log(`${id}  ${d.status}  hop ${d.hop}/${HOP_CAP}  [${(d.participants || []).join(', ')}]`);
+    if (d.title) console.log(`  title: ${d.title}`);
+    if (d.work_item) console.log(`  work-item: ${d.work_item}`);
+    if ((d.paths || []).length) console.log(`  paths: ${d.paths.join(', ')}`);
+    if (d.superseded_by) console.log(`  superseded by ${d.superseded_by}`);
+    if ((d.absorbed || []).length) console.log(`  absorbed: ${d.absorbed.join(', ')}`);
+    console.log('');
+  }
+  const me = flags.as || process.env.AGORA_AGENT;
+  console.log(msgs.map((e) => render(e, me)).join('\n\n'));
+  console.log(`\n(observing — you are not a participant until you post to ${id})`);
+};
+
+/**
+ * Convergence after the fact.
+ *
+ * Matching will miss: two agents can start minutes apart on work that only
+ * turns out to be one subject at hop 3. This is the recovery both of the
+ * sessions on this bus improvised by hand, promoted to a message type. It
+ * links rather than copies — the messages stay where they were published and
+ * `read` on the target follows the pointer — and hop budgets do not sum,
+ * because merging two half-spent arguments into one exhausted thread would
+ * escalate a conversation that had barely started.
+ */
+cmds.supersede = (flags) => {
+  const agent = agentName(flags);
+  const src = flags.thread;
+  const dst = flags.into;
+  if (!src || !dst) {
+    die(EXIT.REFUSED, 'usage: agora supersede --as A --thread <source> --into <target> [-m "why"]');
+  }
+  if (src === dst) die(EXIT.REFUSED, 'a thread cannot supersede itself');
+
+  const from = threadState(src);
+  if (!from.exists) die(EXIT.REFUSED, `no such thread: ${src}`);
+  if (from.terminal) {
+    die(EXIT.REFUSED, `${src} is already closed (${from.terminal.type} at ${from.terminal.ts})`);
+  }
+  const into = threadState(dst);
+  if (!into.exists) die(EXIT.REFUSED, `no such thread: ${dst}`);
+  if (into.terminal) {
+    die(EXIT.REFUSED,
+      `${dst} is closed (${into.terminal.type}) — you cannot merge into a settled thread`);
+  }
+
+  const body = flags.m || flags.message
+    || `Superseded by ${dst}, where this subject is being settled.`;
+  produce(T.threads, src, {
+    id: mkid(), ts: now(), type: 'SUPERSEDE', from: { agent },
+    thread: src, into: dst, hop: from.hop, body, refs: [],
+  });
+
+  const { desc } = indexRead();
+  const target = desc.get(dst) || {};
+  const srcDesc = desc.get(src) || {};
+  refreshQuietly(src, { status: 'superseded', superseded_by: dst });
+  refreshQuietly(dst, {
+    absorbed: [...new Set([...(target.absorbed || []), src])],
+    paths: srcDesc.paths || [],
+  });
+  console.log(`SUPERSEDE  ${src} → ${dst}`);
+  console.log(`  ${src} is closed; its messages stay where they are and `
+    + `agora read ${dst} now follows the pointer.`);
+  console.log(`  ${dst} keeps its own hop budget (${into.hop}/${HOP_CAP}) — budgets do not sum.`);
+};
+
+cmds.list = (flags) => {
+  const { desc, diverges } = indexRead();
+  let rows = [...desc.values()];
+  if (!flags.all) rows = rows.filter((d) => d.status === 'open');
+  if (typeof flags.path === 'string') rows = rows.filter((d) => (d.paths || []).includes(flags.path));
+  if (typeof flags['work-item'] === 'string') rows = rows.filter((d) => d.work_item === flags['work-item']);
+  if (typeof flags.agent === 'string') rows = rows.filter((d) => (d.participants || []).includes(flags.agent));
+  if (typeof flags.match === 'string') {
+    const q = flags.match.toLowerCase();
+    rows = rows.filter((d) => `${d.title || ''} ${(d.tags || []).join(' ')}`.toLowerCase().includes(q));
+  }
+  rows.sort((a, b) => String(b.last_at || '').localeCompare(String(a.last_at || '')));
+
+  if (flags.json) return console.log(JSON.stringify(rows));
+  if (!rows.length) {
+    return console.log(desc.size
+      ? '(no threads match — try --all, or agora reindex if the index looks empty)'
+      : '(index is empty — run: agora reindex)');
+  }
+  for (const d of rows) {
+    console.log(`${String(d.status).toUpperCase().padEnd(11)}${d.thread.padEnd(34)}`
+      + `hop ${d.hop}/${HOP_CAP}  [${(d.participants || []).join(', ') || '—'}]`
+      + `${d.work_item ? `  ${d.work_item}` : ''}`);
+    if (d.title) console.log(`           ${d.title.slice(0, 100)}`);
+    if ((d.paths || []).length) console.log(`           paths: ${d.paths.slice(0, 6).join(', ')}`);
+    if (d.superseded_by) console.log(`           → superseded by ${d.superseded_by}`);
+  }
+  if (flags.diverges) {
+    console.log('');
+    for (const v of diverges) {
+      console.log(`DIVERGE  ${v.thread} declined ${v.declined}  (${v.from.agent})`);
+      console.log(`         ${v.reason}`);
+    }
+  }
+};
+
+/**
+ * Operator repair, available as a command until there is an operator.
+ *
+ * Client-writes keep discovery working with no operator running; this is the
+ * other half — it stops drift accumulating, and it is how threads that predate
+ * the index get descriptors at all.
+ */
+cmds.reindex = () => {
+  const ids = [...new Set(readAll(T.threads).map((e) => e.thread).filter(Boolean))];
+  if (!ids.length) return console.log('(no threads to index)');
+  for (const id of ids) {
+    const d = refreshDescriptor(id);
+    console.log(`indexed ${id.padEnd(30)} ${d.status.padEnd(11)} ${(d.paths || []).length} paths`);
+  }
+  console.log(`\n${ids.length} descriptor${ids.length > 1 ? 's' : ''} written to ${T.index}`);
+};
+
 cmds.help = () => {
   console.log(`agora — a chat room for agents sharing this workspace
 
   doctor                              broker health, topics, live leases
+  topics          [--ensure]          show or create the topics the protocol needs
   join            --as A              seek to live end; announce presence
   presence                            who is listening
   leases                              who holds what
 
-  claim <path>    --as A [--ttl 30m]  take the lease   (exit 75 if denied)
+  claim <path>    --as A [--ttl 30m] [--thread T]   take the lease (exit 75 if denied)
   release <path>  --as A              give it back
   edit <path>     --as A [--thread T] [-m "..."]   log a change with its sha
 
@@ -690,6 +1200,19 @@ cmds.help = () => {
   catchup         [--thread T] [--json]             ordered replay
   threads                             open threads, hop counts, last line
 
+finding the right conversation, instead of starting a second one:
+
+  open            --as A --title "..." [--paths a,b] [--work-item W] [--tags x,y]
+                  [-m "opening message"]            propose an intent; get candidates
+                  --join T                          read one instead of opening
+                  --decline T --reason "..."        decline it, on the record, then open
+  read <thread>   [--json]            full history, observer only — no participation
+  list            [--path P] [--work-item W] [--agent A] [--match S]
+                  [--all] [--diverges] [--json]     what is already in flight
+  supersede       --as A --thread <source> --into <target> [-m "why"]
+                  merge after the fact; links, never copies; budgets do not sum
+  reindex                             rebuild every descriptor from the log
+
 exit codes: 0 ok · 64 doorbell timeout · 65 refused · 69 no broker · 75 denied`);
 };
 
@@ -703,7 +1226,7 @@ function parseArgs(argv) {
       const k = a.slice(2);
       const next = argv[i + 1];
       if (next === undefined || next.startsWith('--')) { flags[k] = true; }
-      else if (k === 'ref') { flags.ref = [].concat(flags.ref || [], next); i++; }
+      else if (k === 'ref' || k === 'decline') { flags[k] = [].concat(flags[k] || [], next); i++; }
       else { flags[k] = next; i++; }
     } else if (a === '-m') { flags.m = argv[++i]; }
     else { args.push(a); }
