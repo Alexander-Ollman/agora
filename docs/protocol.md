@@ -26,6 +26,13 @@ tail of each topic is the current state — the live lease table, the ratified
 ruling set, and one descriptor per thread respectively. There is no second store
 to keep in sync.
 
+Reads are verified rather than trusted. `rpk topic consume -o :end` can return
+early and still exit 0, so every whole-topic read must observe the head offset
+of each non-empty partition before it is believed — retried up to three times,
+and fatal rather than partial if it stays short. A missing topic is empty; an
+unreachable broker is an error. See Operations for what this looked like when it
+went wrong.
+
 Topic names carry a prefix, `bus.` by default. `AGORA_TOPIC_PREFIX` changes it,
 which is how the test suite stands up a parallel bus and drops it afterwards:
 Kafka cannot delete individual records, so the only safe way to exercise the

@@ -99,26 +99,119 @@ function produce(topic, key, obj) {
   if (res.status !== 0) {
     die(EXIT.NOBROKER, `produce to ${topic} failed: ${(res.stderr || '').trim()}`);
   }
+  // Our own write invalidates our own view of this topic, and only this one —
+  // producing to one topic cannot change another.
+  _readCache.delete(topic);
+  _boundsCache.delete(topic);
+  _topicSet = null;
   return obj;
 }
 
-/** Bounded read: everything currently in the topic, then exit. Never blocks. */
+const _readCache = new Map();
+const _boundsCache = new Map();
+let _topicSet = null;
+
+function topicExists(t) {
+  if (!_topicSet) _topicSet = existingTopics();
+  return _topicSet.has(t);
+}
+
+/**
+ * Per-partition log bounds, so a read can prove it saw everything.
+ *
+ * The record at `end - 1` is the newest in its partition, so nothing supersedes
+ * it and compaction keeps it. That makes "did I see offset end-1 in every
+ * non-empty partition" a completeness check that is valid for the compacted
+ * topics as well as the retained ones.
+ */
+function partitionBounds(topic) {
+  if (_boundsCache.has(topic)) return _boundsCache.get(topic);
+  const res = rpk(['topic', 'describe', topic, '-p']);
+  if (res.status !== 0) {
+    die(EXIT.NOBROKER, `cannot read partition bounds for ${topic}: ${(res.stderr || '').trim()}`);
+  }
+  const lines = (res.stdout || '').split('\n').filter((l) => l.trim());
+  const head = (lines.shift() || '').trim().split(/\s+/);
+  const iP = head.indexOf('PARTITION');
+  const iS = head.indexOf('LOG-START-OFFSET');
+  const iE = head.indexOf('HIGH-WATERMARK');
+  const out = new Map();
+  if (iP < 0 || iS < 0 || iE < 0) return out;      // unfamiliar rpk output — skip the check
+  for (const l of lines) {
+    const c = l.trim().split(/\s+/);
+    const p = Number(c[iP]); const st = Number(c[iS]); const en = Number(c[iE]);
+    if (Number.isFinite(p) && Number.isFinite(st) && Number.isFinite(en)) out.set(p, { start: st, end: en });
+  }
+  _boundsCache.set(topic, out);
+  return out;
+}
+
+/**
+ * Bounded read: everything currently in the topic, then exit. Never blocks.
+ *
+ * `rpk topic consume -o :end` sometimes returns early **and exits 0**. Observed
+ * on this bus: a topic holding 191 records returned 142 on one call and 191 on
+ * the next, with no error on either. The old implementation returned whatever
+ * arrived, so a short read became a confident wrong answer — a thread that
+ * exists looks absent, `list` under-reports, and an agent opens the duplicate
+ * this tool exists to prevent.
+ *
+ * So a read now has to prove it is complete before anything is allowed to
+ * believe it: every non-empty partition must yield its head offset, or the read
+ * is retried, and a read that stays short is fatal rather than partial.
+ */
 function readAll(topic) {
-  const res = rpk(['topic', 'consume', topic, '-o', ':end', '-f', 'json', '--pretty-print=false']);
-  if (res.status !== 0 && !res.stdout) return [];
-  return (res.stdout || '')
-    .split('\n')
-    .filter(Boolean)
-    .map((l) => {
+  if (_readCache.has(topic)) return _readCache.get(topic);
+  // A topic that does not exist yet is empty, not broken — `doctor` on a fresh
+  // install has to be able to say so rather than dying on the way to saying it.
+  if (!topicExists(topic)) return [];
+
+  const want = new Map();
+  for (const [p, b] of partitionBounds(topic)) if (b.end > b.start) want.set(p, b.end - 1);
+
+  let short = '';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const res = rpk(['topic', 'consume', topic, '-o', ':end', '-f', 'json', '--pretty-print=false']);
+    if (res.status !== 0) {
+      die(EXIT.NOBROKER,
+        `read of ${topic} failed: ${(res.stderr || `rpk exited ${res.status}`).trim()}`);
+    }
+    const out = [];
+    let undecodable = 0;
+    for (const l of (res.stdout || '').split('\n')) {
+      if (!l) continue;
       try {
         const rec = JSON.parse(l);
         const env = JSON.parse(rec.value);
         env._offset = rec.offset;
         env._partition = rec.partition;
-        return env;
-      } catch { return null; }
-    })
-    .filter(Boolean);
+        out.push(env);
+      } catch { undecodable++; }
+    }
+    // Skipped rather than fatal, deliberately: Kafka cannot delete a record, so
+    // one malformed message would otherwise brick every command on this topic
+    // permanently. Loud, and survivable.
+    if (undecodable) {
+      process.stderr.write(`agora: warning — skipped ${undecodable} undecodable record(s) in ${topic}\n`);
+    }
+
+    const seen = new Map();
+    for (const e of out) {
+      const p = e._partition;
+      if (!seen.has(p) || seen.get(p) < e._offset) seen.set(p, e._offset);
+    }
+    const missing = [...want].filter(([p, head]) => !(seen.get(p) >= head));
+    if (!missing.length) {
+      _readCache.set(topic, out);
+      return out;
+    }
+    short = missing
+      .map(([p, head]) => `p${p} stopped at ${seen.has(p) ? seen.get(p) : 'nothing'} of ${head}`)
+      .join(', ');
+    process.stderr.write(`agora: warning — short read of ${topic} (${short}), retrying ${attempt}/3\n`);
+  }
+  die(EXIT.NOBROKER,
+    `${topic} kept returning a short read (${short}) — refusing to answer from partial history`);
 }
 
 function die(code, msg) {
@@ -409,9 +502,16 @@ const cmds = {};
 /** Topic names that actually exist. Parsed rather than substring-matched, so a
  *  prefixed test bus cannot be mistaken for the real one. */
 function existingTopics() {
-  const out = rpk(['topic', 'list']).stdout || '';
+  const res = rpk(['topic', 'list']);
+  // "I could not ask" and "there are none" are different answers, and conflating
+  // them is how an unreachable broker came to report an empty bus instead of an
+  // error — the same silent-degradation bug as a short read, one level down.
+  if (res.status !== 0) {
+    die(EXIT.NOBROKER,
+      `cannot list topics: ${(res.stderr || `rpk exited ${res.status}`).trim()}`);
+  }
   return new Set(
-    out.split('\n').slice(1).map((l) => l.trim().split(/\s+/)[0]).filter(Boolean),
+    (res.stdout || '').split('\n').slice(1).map((l) => l.trim().split(/\s+/)[0]).filter(Boolean),
   );
 }
 
@@ -769,6 +869,7 @@ cmds.dump = () => {
     claims: readAll(T.claims),
     decisions: readAll(T.decisions),
     presence: readAll(T.presence),
+    index: [...indexRead().desc.values()],
     leases: [...leases().values()],
     hop_cap: HOP_CAP,
   };

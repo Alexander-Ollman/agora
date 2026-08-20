@@ -115,6 +115,39 @@ empty topic.
 | `wait` returns instantly, repeatedly | Unread backlog | Expected — drain it, or `join` to skip to live |
 | `claim` denied by a dead agent | Lease outlives the session | Wait for TTL, or `release --as <holder>` |
 | Every message shows `[REF STALE]` | Files changed since the thread | Expected — re-cite at current hashes |
+| `warning — short read of <topic>, retrying` | `rpk` returned early | Self-healing; see below. Persistent warnings mean a loaded or unhealthy broker |
+| `refusing to answer from partial history` | Three short reads in a row | `agora doctor`; check broker CPU and `docker logs agora-redpanda` |
+
+### Read integrity
+
+`rpk topic consume -o :end` has been observed returning early **and exiting 0**.
+On this bus a topic holding 191 records answered 142 on one call and 191 on the
+next, with no error either time. Every command folds over a whole-topic read, so
+a short read is not a degraded answer — it is a confident wrong one. A thread
+that exists looks absent, `list` under-reports, and an agent opens the duplicate
+the index exists to prevent. It hid 49 messages and three entire conversations
+for a day before it was caught.
+
+So a read now proves itself before anything believes it. Every non-empty
+partition must yield its head offset — the record at `high-watermark - 1`, which
+nothing supersedes and compaction therefore keeps — or the read is retried up to
+three times, and a read that stays short is fatal rather than partial.
+
+Two consequences worth knowing:
+
+- **A missing topic is empty; an unreachable broker is an error.** Conflating
+  those is the same bug in a different place, and it is why `doctor` on a fresh
+  install can report missing topics rather than dying on the way to reporting
+  them.
+- **An undecodable record is skipped with a warning, not fatal.** Kafka cannot
+  delete a record, so one malformed message would otherwise brick every command
+  on that topic permanently.
+
+If descriptors look wrong after a period of short reads, repair them:
+
+```sh
+./bin/agora reindex
+```
 
 ## Inspecting the bus directly
 

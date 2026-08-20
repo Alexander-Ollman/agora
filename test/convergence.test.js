@@ -23,9 +23,13 @@ const CONTAINER = process.env.AGORA_CONTAINER || 'agora-redpanda';
 const PREFIX = `test-${crypto.randomBytes(3).toString('hex')}.`;
 
 function agora(...args) {
+  return agoraOn(PREFIX, ...args);
+}
+
+function agoraOn(prefix, ...args) {
   const res = spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, AGORA_TOPIC_PREFIX: PREFIX },
+    env: { ...process.env, AGORA_TOPIC_PREFIX: prefix },
   });
   return { code: res.status, out: res.stdout || '', err: res.stderr || '' };
 }
@@ -240,4 +244,63 @@ test('a work item derives the thread id rather than a slug', opts, () => {
     '--work-item', 'ERA-8397');
   assert.match(again.out, /CANDIDATES \(1\)/);
   assert.match(again.out, /the derived thread id is this thread/);
+});
+
+/* ── read integrity ────────────────────────────────────────────────────
+ *
+ * `rpk topic consume -o :end` was observed returning early and exiting 0 — a
+ * topic holding 191 records answered 142 on one call and 191 on the next. Every
+ * guarantee above folds over readAll, so a short read is not a degraded answer,
+ * it is a confidently wrong one: a thread that exists looks absent and the
+ * agent opens the duplicate this whole feature exists to prevent.
+ */
+
+test('a read is complete, and stays complete across repeated calls', opts, () => {
+  const before = JSON.parse(agora('list', '--all', '--json').out).length;
+  for (let i = 0; i < 4; i++) {
+    agora('open', '--as', 'r1', '--title', `Integrity probe number ${i} here`,
+      '-m', `probe ${i}`);
+  }
+  const expected = before + 4;
+
+  // Ten reads, every one of them whole. Before the fix this was a coin flip.
+  for (let i = 0; i < 10; i++) {
+    const r = agora('list', '--all', '--json');
+    assert.strictEqual(r.code, 0, r.err);
+    assert.strictEqual(JSON.parse(r.out).length, expected,
+      `read ${i} returned a different number of threads — short read`);
+    assert.ok(!/short read/.test(r.err), `read ${i} needed a retry: ${r.err}`);
+  }
+});
+
+test('a write is visible to the very next read in the same process', opts, () => {
+  // The read cache is invalidated by produce, or `open` would rank against a
+  // stale index and refreshDescriptor would write back a descriptor missing the
+  // message that triggered it.
+  const r = agora('open', '--as', 'r2', '--title', 'Cache invalidation check here',
+    '-m', 'first');
+  assert.strictEqual(r.code, 0, r.err);
+  const d = JSON.parse(agora('list', '--all', '--json').out)
+    .find((x) => x.thread === 'th-cache-invalidation-check-here');
+  assert.ok(d, 'thread missing from the index immediately after open');
+  assert.deepStrictEqual(d.participants, ['r2']);
+  assert.strictEqual(d.hop, 1);
+});
+
+test('a topic that does not exist is empty, not fatal', opts, () => {
+  // doctor on a fresh install has to be able to report the topics are missing
+  // rather than dying on the way to reporting it.
+  const r = agoraOn('test-absent-none.', 'doctor');
+  assert.strictEqual(r.code, 69);
+  assert.match(r.out, /MISSING/);
+  assert.match(r.out, /agora topics --ensure/);
+  assert.ok(!/short read|refusing to answer/.test(r.err), r.err);
+});
+
+test('an unreachable broker is refused, not answered from nothing', opts, () => {
+  const res = spawnSync(process.execPath, [CLI, 'list'], {
+    encoding: 'utf8',
+    env: { ...process.env, AGORA_TOPIC_PREFIX: PREFIX, AGORA_CONTAINER: 'no-such-container' },
+  });
+  assert.strictEqual(res.status, 69);
 });
