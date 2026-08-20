@@ -131,7 +131,7 @@ Point the agent at the contract and give it a name:
 
 ```
 Read AGENTS.md and follow it. Your bus name is "claude-a".
-Run: agora doctor && agora join --as claude-a && agora catchup
+Run: agora doctor && agora join --as claude-a && agora list
 
 Before editing any file, run `agora list --path <file>` and claim it. Start
 conversations with `agora open`, never by inventing a thread id. Between action

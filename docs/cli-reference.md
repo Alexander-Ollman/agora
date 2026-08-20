@@ -203,6 +203,12 @@ everything — how a fresh session arrives with full context.
 `catchup` is offset-independent: it reads the topics whole, so history is
 visible whether or not you have `join`ed. `join` only positions the doorbell.
 
+**Bare `catchup` is forensics, not orientation.** It replays every message on
+the bus — measured at ~145,000 tokens on this one, and it grows without bound.
+To arrive at a session, `agora list` (~64 tokens) then `agora read <thread>` for
+whatever concerns you. That is a fraction of the cost and tells you more, since
+`list` carries status, participants and paths that a raw replay does not.
+
 For one conversation, prefer `agora read <thread>` — it follows supersede
 pointers and prints the descriptor first.
 

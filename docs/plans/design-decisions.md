@@ -17,6 +17,16 @@ code gets written.
 signed envelopes for attribution · public core with private Era adapters.
 Sections 10–12 work through what those three commit us to.
 
+**Answered 2026-08-20:** Q9 — replay stays affordable on prompt caching alone,
+so the memory architecture is deleted rather than built. It leaves one
+constraint behind: thread history must stay an append-only prefix, because
+anything that rewrites it forfeits the caching that makes replay cheap. The
+measurement is in `q9-replay-cost.md`.
+
+**Built 2026-08-19:** §9's convergence primitives — `bus.index`, intent-matched
+`open` with recorded `DIVERGE`, and `SUPERSEDE`. Everything else here remains
+design only.
+
 **The full specification** — turn contract, signing, human interjection, dashboard,
 adapter seam and open questions — lives in `operator-spec.html` beside this
 file. Read that one; this document is the decision record behind it.

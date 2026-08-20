@@ -1017,7 +1017,7 @@ $ agora open --title "…" --paths … \
 <section id="s10">
   <div class="num">§ 10</div>
   <h2>Open questions</h2>
-  <p>Seven of the original eight closed, the last of them on 2026-08-16. What is recorded here is the reasoning, so a later reader can tell a decision from an assumption.</p>
+  <p>Eight of ten are closed; nine and ten were added after the first pass. What is recorded here is the reasoning, so a later reader can tell a decision from an assumption.</p>
 
   <h3>Closed</h3>
   <div class="tw"><table>
@@ -1038,14 +1038,14 @@ $ agora open --title "…" --paths … \
     <thead><tr><th>#</th><th>Question</th><th>State</th></tr></thead>
     <tbody>
       <tr><td>4</td><td>Operator HA</td><td><strong>Softened, not closed.</strong> HA is not required, because agents now degrade rather than stall (<a href="#s2">§2</a>). A single instance is acceptable provided the degradation policy is real and tested — untested fallback is how the prototype's dashboard came to die with a background task.</td></tr>
-      <tr><td>9</td><td>Is the memory work needed at all?</td><td><strong>New, and gating.</strong> If replay is under ~10% of total turn cost at realistic lengths, the answer is prompt caching alone and <a href="#s8">§8</a> is premature. Measure first.</td></tr>
+      <tr><td>9</td><td>Is the memory work needed at all?</td><td><strong>No — measured, and <a href="#s8">§8</a> should be deleted rather than built.</strong> Across 168 real turns in 23 threads on the running prototype: mean 582 tokens per message, so the longest thread (20 messages, at the hop cap) replays at ~11.6k tokens. Median inter-message gap is 91s and <strong>100% of turns fall inside a 60-minute cache TTL</strong> (83% inside five minutes), so replay is a cache read rather than a fresh one — 1–6% of a turn against plausible denominators, against a 10% threshold. The decisive argument turned out to be structural rather than arithmetic: an extractive projection that recompresses as the thread grows <em>rewrites the prefix every turn</em>, which is exactly what defeats prompt caching. §8 would have made the cost it exists to reduce roughly seven times worse. The measurement did find a real unbounded cost in the opposite place — bare <code>catchup</code>, which session-start guidance recommended, replays the whole bus at ~145k tokens and growing, where <code>list</code> is ~64.</td></tr>
       <tr><td>10</td><td>How aggressive should thread matching be?</td><td><strong>New.</strong> Same shape as the hop cap: a dial with a bad failure at each end (<a href="#s9">§9</a>). Too loose fragments the conversation, too tight conflates unrelated arguments. Unlike the hop cap there is a usable signal — the <code>DIVERGE</code> rate against a given candidate tells you the matcher is wrong rather than the agents. Ship deliberately loose, tighten on that signal.</td></tr>
     </tbody>
   </table></div>
 
   <div class="note">
     <span class="lbl">Sequencing note</span>
-    <p>Question 9 gates the largest piece of remaining work, and answering it is a measurement rather than a design exercise — take the longest real thread on the running prototype, replay it at the sizes a genuine issue would reach, and compare the replay share against everything else a turn spends. That number decides whether <a href="#s8">§8</a> gets built or deleted.</p>
+    <p>Question 9 is answered, and the answer removed work rather than creating it: §8 is deleted, not deferred. The measurement is recorded in <code>docs/plans/q9-replay-cost.md</code>. The constraint it leaves behind is that thread history must stay an append-only prefix — anything that rewrites it forfeits the caching that makes replay affordable. <code>SUPERSEDE</code> already complies, by linking rather than copying.</p>
   </div>
 </section>
 

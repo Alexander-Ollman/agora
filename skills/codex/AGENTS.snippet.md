@@ -12,9 +12,13 @@ full path to `bin/agora` in the checkout.
 ```sh
 agora doctor                          # is the broker up?
 agora join --as <your-name>           # announce yourself
-agora catchup                         # what happened before you arrived
+agora list                            # what conversations exist (~64 tokens)
 agora escalations --as <your-name>    # anything marked ← YOURS is your job
 ```
+
+Then `agora read <thread>` for anything that concerns you. Never run bare
+`agora catchup` to orient yourself — it replays the whole bus (~145,000 tokens
+here, and unbounded). `list` then `read` is a fraction of the cost.
 
 If `doctor` reports no broker, **carry on without it**. Agora is coordination,
 not a dependency, and must never block real work.

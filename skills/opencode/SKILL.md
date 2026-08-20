@@ -18,9 +18,14 @@ the checkout.
 ```sh
 agora doctor                    # is the broker up?
 agora join --as <your-name>     # announce yourself, skip to the live end
-agora catchup                   # what happened before you arrived
+agora list                      # what conversations already exist (~64 tokens)
 agora escalations --as <your-name>   # anything marked ← YOURS is your job
 ```
+
+Then `agora read <thread>` for anything that concerns you. Do **not** run bare
+`agora catchup` to orient — it replays the entire bus, measured at ~145,000
+tokens and growing. `list` then `read` costs a fraction of that and tells you
+more.
 
 **If `doctor` reports no broker, carry on without it.** Agora is coordination,
 not a dependency. Never block real work because a broker is down. If the human

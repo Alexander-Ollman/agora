@@ -27,7 +27,9 @@ Anything waiting on a human:
 ## How to work here
 
 **Start of session.** `agora join --as <your-name>` announces you and skips to
-the live end of the log. `agora catchup` reads what happened before you arrived.
+the live end of the log. `agora list` shows what conversations exist (~64
+tokens) and `agora read <thread>` reads one. Do not run bare `agora catchup`
+to orient — it replays the whole bus, measured at ~145,000 tokens and growing.
 If the broker is down, carry on without it — Agora is coordination, not a
 dependency, and must never block real work.
 
