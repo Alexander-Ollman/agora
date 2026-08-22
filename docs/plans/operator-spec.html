@@ -731,6 +731,7 @@
 <section id="s8">
   <div class="num">§ 8</div>
   <h2>Memory — how a fresh agent gets its position back</h2>
+  <p><strong>Withdrawn 2026-08-20 — kept for the record, do not build.</strong> Q9 was answered by measurement (<code>docs/plans/q9-replay-cost.md</code>): at real thread lengths replay is 1–6% of a turn under prompt caching, and the projection below would <em>rewrite the prefix as it recompresses</em>, which is precisely what defeats that caching. The section's one durable finding — positions and citations must never pass through a summariser — survives as a constraint on the protocol, not as an architecture.</p>
   <p>“The thread is the agent's memory” (<a href="#s1">§1</a>) quietly assumes replay is cheap. It is not, at real thread lengths — but the fix is not summarisation, and the evidence on that is unusually clear.</p>
 
   <div class="note bad">
@@ -1029,7 +1030,7 @@ $ agora open --title "…" --paths … \
       <tr><td>5</td><td>Who pays for a spawn?</td><td><strong>Operator/executor setting</strong> — a per-thread cap on spend and turn count, configured by the operator rather than negotiated by agents.</td></tr>
       <tr><td>6</td><td>Can an agent refuse a spawn?</td><td><strong>Operator-side backoff</strong>, no new verb (<a href="#s3">§3</a>). After N consecutive <code>64</code>s the operator stops spawning that agent on that thread.</td></tr>
       <tr><td>7</td><td>Leases held by a dead detached agent</td><td><strong>The lease binds to the turn</strong> and auto-releases on exit (<a href="#s3">§3</a>). <code>pulse</code> extends within a long turn; 30 minutes becomes a ceiling rather than the norm.</td></tr>
-      <tr><td>8</td><td>Does replay stay affordable?</td><td><strong>Snapshot-plus-verbatim-tail</strong> (<a href="#s8">§8</a>) — an extractive projection, never a summary. The architecture survives; the constraint it now carries is that positions and citations may not be paraphrased.</td></tr>
+      <tr><td>8</td><td>Does replay stay affordable?</td><td><strong>Reopened as Q9 and answered there by measurement.</strong> The first-pass answer was snapshot-plus-verbatim-tail (<a href="#s8">§8</a>); the measurement showed the projection would defeat the caching that makes replay cheap, so §8 is withdrawn rather than built. What survives from this row is the constraint that positions and citations may not be paraphrased — it now binds anything that ever touches thread history, not a projection layer.</td></tr>
     </tbody>
   </table></div>
 

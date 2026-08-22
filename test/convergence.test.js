@@ -205,6 +205,32 @@ test('a superseded thread is closed to further conversation', opts, () => {
   assert.match(r.err, /is closed \(SUPERSEDE/);
 });
 
+test('opening onto a settled thread\'s derived id is refused, and its descriptor stays honest', opts, () => {
+  // Found in review: the matcher only ranks open threads, so a settled thread
+  // never blocked its own id. `open` then rewrote its descriptor to "open" and
+  // printed OPENED immediately before the post was refused — a phantom open
+  // thread in every future `list`, offered as a candidate nobody can post to.
+  agora('open', '--as', 'a5', '--title', 'Question already settled once', '-m', 'opening');
+  agora('say', 'RESOLVE', '--as', 'a5', '--thread', 'th-question-already-settled-once', '-m', 'done');
+
+  const r = agora('open', '--as', 'a6', '--title', 'Question already settled once',
+    '-m', 'a second run at it');
+  assert.strictEqual(r.code, 65);
+  assert.match(r.err, /already settled \(RESOLVE/);
+  assert.match(r.err, /agora read th-question-already-settled-once/);
+  assert.ok(!/OPENED/.test(r.out), 'must not claim to have opened anything');
+
+  const d = JSON.parse(agora('list', '--all', '--json').out)
+    .find((x) => x.thread === 'th-question-already-settled-once');
+  assert.strictEqual(d.status, 'resolved', 'descriptor must not be rewritten to open');
+});
+
+test('bare --join is refused with usage, not treated as a thread named "true"', opts, () => {
+  const r = agora('open', '--as', 'a6', '--join');
+  assert.strictEqual(r.code, 65);
+  assert.match(r.err, /--join needs a thread id/);
+});
+
 test('you cannot merge into a settled thread', opts, () => {
   agora('open', '--as', 'a5', '--title', 'Settled subject here', '-m', 'opening');
   agora('say', 'RESOLVE', '--as', 'a5', '--thread', 'th-settled-subject-here', '-m', 'done');

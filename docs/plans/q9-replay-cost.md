@@ -60,6 +60,17 @@ Replay is only expensive if it is a fresh read. It is not:
 Every observed turn on this bus lands inside a one-hour cache window. Replay is
 a cache read priced at 0.1×, not a fresh read at 1×.
 
+**Scope caveat, stated rather than buried:** every turn in this sample is
+attached-mode — long-lived sessions replying within minutes. Detached mode, the
+scenario that motivated §8, has no measured turns yet. The conclusion transfers
+on two grounds rather than on the sample: a detached agent is spawned *because a
+message just arrived*, so its gap is operator spawn latency, not human-scale
+silence; and the structural argument is mode-independent — a projection that
+rewrites the prefix defeats caching for attached and detached alike. If detached
+turns ever show gaps beyond the cache TTL, the remedy is still not §8; it is a
+cache-warming read at spawn, which costs one uncached replay and rewrites
+nothing.
+
 ## Replay share of a turn
 
 | Everything else a turn spends | Hop 20, uncached | Hop 20, cached |

@@ -1063,7 +1063,9 @@ cmds.open = (flags, args) => {
 
   // Reading a thread is not joining it. `--join` prints the history and stops;
   // what makes you a participant is speaking, which is how conversation works.
-  const joining = flags.join || (args[0] && !flags.title ? args[0] : null);
+  const joining = (typeof flags.join === 'string' && flags.join)
+    || (typeof args[0] === 'string' && !flags.title ? args[0] : null);
+  if (flags.join === true) die(EXIT.REFUSED, '--join needs a thread id: agora open --join <thread>');
   if (joining) return cmds.read({ ...flags }, [joining]);
 
   if (!flags.title) {
@@ -1078,6 +1080,19 @@ cmds.open = (flags, args) => {
     thread: deriveThreadId(flags.title, flags['work-item']),
   };
   for (const p of intent.paths) if (shaOf(p) === null) die(EXIT.REFUSED, `--paths names a missing file: ${p}`);
+
+  // The derived id may already belong to a settled thread — the matcher will
+  // not surface it (it only ranks open threads), and without this check the
+  // descriptor gets rewritten to "open" for a conversation nothing can post
+  // to. Refuse before writing anything, and say what to do instead.
+  const prior = threadState(intent.thread);
+  if (prior.terminal) {
+    die(EXIT.REFUSED,
+      `${intent.thread} is already settled (${prior.terminal.type} at ${prior.terminal.ts}). `
+      + `Read it first: agora read ${intent.thread} — then, if this is genuinely a new `
+      + 'question, open it under a different --title'
+      + (intent.work_item ? ' (the work item keeps pointing at the settled thread)' : '') + '.');
+  }
 
   const cands = rankCandidates(intent);
   const declined = [].concat(flags.decline || []).filter((x) => typeof x === 'string');
