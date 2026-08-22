@@ -35,6 +35,15 @@ pointers, not full thread histories — the Q9 measurement found bare history
 replay is the bus's one unbounded cost. The operator and detached mode remain
 design only.
 
+**Built 2026-08-22 (Phase 2):** the operator as a reconcile loop — a one-shot
+`sweep` (lease reaping past `AGORA_REAP_MIN`, escalation-ownership transfer
+posted as a real message so the inheritor's doorbell rings, index-drift repair,
+`RELATED` pointers between open threads sharing a path) plus a daemon that is
+nothing but sweep-on-interval. Q4 closed: single instance, degradation tested —
+the whole client-side suite runs operatorless and sweeps are proven idempotent.
+Still design only: routing escalations to external channels (Linear/Slack) and
+detached turns.
+
 **The full specification** — turn contract, signing, human interjection, dashboard,
 adapter seam and open questions — lives in `operator-spec.html` beside this
 file. Read that one; this document is the decision record behind it.

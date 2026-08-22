@@ -349,9 +349,9 @@ test('an unreachable broker is refused, not answered from nothing', opts, () => 
  * *as someone else* is visible to every reader.
  */
 
-function injectRaw(env) {
+function injectRaw(env, topic = 'threads', key = env.thread) {
   const r = spawnSync('docker', ['exec', '-i', CONTAINER, 'rpk', 'topic', 'produce',
-    PREFIX + 'threads', '-k', env.thread, '--acks', '1'],
+    PREFIX + topic, '-k', key, '--acks', '1'],
     { input: JSON.stringify(env) + '\n', encoding: 'utf8' });
   assert.strictEqual(r.status, 0, r.stderr);
 }
@@ -438,4 +438,140 @@ test('whoami reports identity, publication state, and impersonation risk', opts,
   const ghost = agoraId(IDDIR2, PREFIX, 'whoami', '--as', 'signer-a');
   assert.match(ghost.out, /no enrolled identity on this machine/);
   assert.match(ghost.out, /enrolled on the bus by someone else/);
+});
+
+/* ── the operator ───────────────────────────────────────────────────
+ *
+ * Q4's condition was that the degradation policy be tested, not assumed. The
+ * degradation test is the whole suite above this line: every convergence,
+ * signing and read-integrity guarantee was exercised with no operator running.
+ * What follows tests the other direction — that when the operator IS running
+ * it repairs without churning, and that its own death is visible.
+ */
+
+const OPTMP = fs.mkdtempSync(path.join(os.tmpdir(), 'agora-optmp-'));
+
+function sweep(...extra) {
+  const res = spawnSync(process.execPath, [CLI, 'operator', 'sweep', ...extra], {
+    encoding: 'utf8',
+    env: { ...process.env, AGORA_TOPIC_PREFIX: PREFIX, AGORA_IDENTITY_DIR: IDDIR,
+      AGORA_TMP_DIR: OPTMP, AGORA_REAP_MIN: '45' },
+  });
+  return { code: res.status, out: res.stdout || '', err: res.stderr || '' };
+}
+
+test('sweep reaps a silent holder\'s lease but never a live one\'s', opts, () => {
+  // deadhold: 2h lease, presence 60m old. livehold: 2h lease, fresh presence.
+  agora('claim', 'install.sh', '--as', 'deadhold', '--ttl', '2h');
+  agora('claim', 'docker-compose.yml', '--as', 'livehold', '--ttl', '2h');
+  injectRaw({ id: 'p-dead', ts: new Date(Date.now() - 60 * 60000).toISOString(),
+    type: 'PRESENCE', from: { agent: 'deadhold' }, state: 'waiting' }, 'presence', 'deadhold');
+  injectRaw({ id: 'p-live', ts: new Date().toISOString(),
+    type: 'PRESENCE', from: { agent: 'livehold' }, state: 'waiting' }, 'presence', 'livehold');
+
+  const dry = sweep('--dry-run');
+  assert.match(dry.out, /would reap-lease {8}install\.sh/);
+  assert.ok(!/docker-compose/.test(dry.out), 'a live holder must not be reaped');
+
+  const r = sweep('--json');
+  const { actions } = JSON.parse(r.out);
+  assert.ok(actions.some((a) => a.kind === 'reap-lease' && /install\.sh/.test(a.detail)));
+
+  const l = agora('leases');
+  assert.ok(!/install\.sh/.test(l.out), 'reaped lease still held');
+  assert.match(l.out, /docker-compose\.yml/);
+  agora('release', 'docker-compose.yml', '--as', 'livehold');
+});
+
+test('sweep hands a dead owner\'s escalation to the earliest live participant, and it rings', opts, () => {
+  agoraOn(PREFIX, 'join', '--as', 'esc-dead');
+  agora('open', '--as', 'esc-dead', '--title', 'Ruling needed on something', '-m', 'which way?');
+  agora('say', 'COMMENT', '--as', 'esc-live', '--thread', 'th-ruling-needed-on-something', '-m', 'ask');
+  agoraOn(PREFIX, 'join', '--as', 'esc-live');
+  agora('say', 'ESCALATE', '--as', 'esc-dead', '--thread', 'th-ruling-needed-on-something', '-m', 'human!');
+  injectRaw({ id: 'p-escdead', ts: new Date(Date.now() - 90 * 60000).toISOString(),
+    type: 'PRESENCE', from: { agent: 'esc-dead' }, state: 'waiting' }, 'presence', 'esc-dead');
+
+  const r = sweep();
+  assert.match(r.out, /escalation-owner {2}th-ruling-needed-on-something: esc-dead → esc-live/);
+
+  // the transfer is a real message: it rings the inheritor's parked doorbell.
+  // Their queue since join: first the original ESCALATE (owned by esc-dead at
+  // post time — renders as "do not also ask yours"), then the transfer, which
+  // renders the ownership box with their own name in it.
+  const first = agora('wait', '--as', 'esc-live', '--timeout', '10');
+  assert.strictEqual(first.code, 0, first.err);
+  assert.match(first.out, /esc-dead is asking their user/);
+  const second = agora('wait', '--as', 'esc-live', '--timeout', '10');
+  assert.strictEqual(second.code, 0, 'transfer must ring the inheritor\'s doorbell');
+  assert.match(second.out, /YOU OWN THIS ESCALATION/);
+
+  const esc = agora('escalations', '--as', 'esc-live');
+  assert.match(esc.out, /ask-human: esc-live {2}← YOURS/);
+});
+
+test('sweep backfills a descriptor the index never saw and repairs drift', opts, () => {
+  injectRaw({ id: 'raw-op-1', ts: new Date().toISOString(), type: 'REQUEST_REVIEW',
+    thread: 'th-op-raw-thread', from: { agent: 'rawman' }, hop: 1, reply_to: null,
+    body: 'written past every client, as a crashed client would have', refs: [] });
+
+  const r = sweep();
+  assert.match(r.out, /index-repair {6}th-op-raw-thread missing → open, hop 1/);
+  const d = JSON.parse(agora('list', '--all', '--json').out)
+    .find((x) => x.thread === 'th-op-raw-thread');
+  assert.ok(d, 'descriptor must exist after sweep');
+  assert.deepStrictEqual(d.participants, ['rawman']);
+});
+
+test('sweep points RELATED both ways across open threads sharing a path — once', opts, () => {
+  agora('open', '--as', 'rel1', '--title', 'One take on the compose file',
+    '--paths', 'docker-compose.yml', '-m', 'first');
+  const second = agora('open', '--as', 'rel2', '--title', 'Another take on compose entirely',
+    '--paths', 'docker-compose.yml', '-m', 'second',
+    '--decline', 'th-one-take-on-the-compose', '--reason', 'genuinely different question');
+  assert.strictEqual(second.code, 0, second.err);
+
+  const r = sweep();
+  assert.match(r.out, /related {11}th-one-take-on-the-compose/);
+  const read = agora('read', 'th-one-take-on-the-compose');
+  assert.match(read.out, /\[RELATED\]/);
+  assert.match(read.out, /related: th-another-take-on-compose-entirely/);
+  assert.match(read.out, /supersede; if not, carry on/);
+});
+
+test('a second sweep over a repaired bus is a no-op — the reconciler does not churn', opts, () => {
+  const r = sweep();
+  assert.strictEqual(r.code, 0, r.err);
+  assert.match(r.out, /nothing to repair/);
+});
+
+test('operator messages are signed by the system identity', opts, () => {
+  const { messages } = JSON.parse(agora('read', 'th-ruling-needed-on-something', '--json').out);
+  const transfer = messages.filter((m) => m.type === 'ESCALATE' && m.from.agent === 'agora').pop();
+  assert.ok(transfer, 'transfer message missing');
+  assert.strictEqual(transfer._sig, 'ok');
+});
+
+test('daemon lifecycle: SIGKILL leaves no corpse claiming to be healthy', opts, () => {
+  const env = { ...process.env, AGORA_TOPIC_PREFIX: PREFIX, AGORA_IDENTITY_DIR: IDDIR,
+    AGORA_TMP_DIR: OPTMP, AGORA_SWEEP_SEC: '60' };
+  const run = (...a) => spawnSync(process.execPath, [CLI, 'operator', ...a], { encoding: 'utf8', env });
+
+  assert.match(run('start').stdout, /started pid/);
+  const st = run('status');
+  assert.strictEqual(st.status, 0);
+  assert.match(st.stdout, /running {2}pid (\d+)/);
+  const pid = Number(st.stdout.match(/pid (\d+)/)[1]);
+
+  process.kill(pid, 'SIGKILL');
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) { try { process.kill(pid, 0); } catch { break; } }
+
+  const after = run('status');
+  assert.strictEqual(after.status, 65, 'a killed operator must not report running');
+  assert.match(after.stdout, /degraded, not broken/);
+
+  assert.match(run('start').stdout, /started pid/, 'restart after a kill must work');
+  assert.match(run('stop').stdout, /stopped pid/);
+  fs.rmSync(OPTMP, { recursive: true, force: true });
 });

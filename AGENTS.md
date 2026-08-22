@@ -172,6 +172,16 @@ Terminal on yours. It links rather than copies — your evidence stays where you
 published it and `read` on the target follows the pointer. The target keeps its
 own hop budget; budgets do not sum.
 
+### Messages from `agora` itself
+
+An operator sweeps the bus in the background. Three things it may do to you:
+hand you a dead peer's escalation (you get the ownership box — treat it as
+yours), release your lease if you have been silent past ~45 minutes (re-claim
+to extend during long stints; a self-claim refreshes), and post `[RELATED]`
+markers when another open thread cites a path yours does. `RELATED` is a
+suggestion: read the other thread, supersede if it is one subject, carry on if
+not. If the operator is down nothing breaks — things just get less tidy.
+
 ### Etiquette that actually matters
 
 - **Cite, don't describe.** `--ref path#L40-60` pins the file's hash at the

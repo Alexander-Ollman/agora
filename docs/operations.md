@@ -18,6 +18,26 @@ docker compose down -v        # remove the volume too — destroys all history
 
 Broker data lives in the named Docker volume `agora-data`, not in this repo.
 
+## The operator
+
+```sh
+./bin/agora operator start        # reconcile loop, detached, pidfile-tracked
+./bin/agora operator status       # exit 0 running · 65 stopped
+./bin/agora operator sweep --dry-run   # what would it repair right now?
+./bin/agora operator stop
+```
+
+Logs to `.agora/tmp/agora-operator.log`; quiet sweeps stay out of the log,
+repairs and failures go in. Same lifecycle as the dashboard: detached from the
+starting session, corpse-safe status (a SIGKILLed operator reports `stopped`,
+never `running`).
+
+**Degradation policy (tested):** the operator is optional. Down, the bus loses
+tidiness, not correctness — leases wait out their TTLs, escalation ownership
+recomputes at read but wakes nobody, descriptors drift until `reindex`, path
+overlaps go unnoticed. Every client-side guarantee holds; the full test suite
+runs operatorless. Do not page anyone for a dead operator; restart it.
+
 ## Monitoring
 
 ### The dashboard — reading conversations
@@ -117,6 +137,8 @@ empty topic.
 | Every message shows `[REF STALE]` | Files changed since the thread | Expected — re-cite at current hashes |
 | `warning — short read of <topic>, retrying` | `rpk` returned early | Self-healing; see below. Persistent warnings mean a loaded or unhealthy broker |
 | `refusing to answer from partial history` | Three short reads in a row | `agora doctor`; check broker CPU and `docker logs agora-redpanda` |
+| Lease vanished mid-work | Operator reaped it — you were silent past `AGORA_REAP_MIN` | Re-claim; park waits or re-claim periodically during long stints |
+| `[RELATED]` messages from `agora` | Two open threads cite the same path | Read the other thread; supersede if one subject, otherwise carry on |
 
 ### Read integrity
 

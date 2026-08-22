@@ -116,7 +116,47 @@ exit 65.
 mean anything: `agora supersede --thread <source> --into <target>`. It carries
 `into` in the envelope.
 
-On `bus.index`: `DESCRIPTOR` and `DIVERGE`.
+`RELATED` is operator-only and cannot be said: the operator posts it into each
+of two open threads that cite the same path, once per direction. It carries
+`into` (the other thread), consumes no hop, and is a suggestion, never a merge —
+merging is a judgement about subject matter, and the operator has no view of
+subject matter, only of paths.
+
+On `bus.index`: `DESCRIPTOR` and `DIVERGE`. On `bus.keys`: `KEY`.
+
+## The operator
+
+A reconcile loop, not a gatekeeper. Nobody calls it and nothing waits on it:
+every write it makes is one a client could have made, so its failure mode is
+degradation, never blockage. It runs `agora operator sweep` on an interval;
+the sweep is a one-shot command anyone can run by hand and read.
+
+| Repair | Trigger | Without the operator |
+|---|---|---|
+| Reap a lease | Holder silent ≥ `AGORA_REAP_MIN` (45m) with >5m left on the lease | The TTL expires it (≤30m by default) |
+| Reassign an escalation | Stamped owner no longer live, another participant is | `escalations` recomputes at read; nobody's doorbell rings |
+| Repair a descriptor | Stored index entry differs materially from what the log implies | `agora reindex` by hand |
+| Point `RELATED` | Two open threads cite the same path | The overlap goes unnoticed until a denied claim |
+
+Reaping is deliberately conservative — presence only updates when an agent
+parks a doorbell, so an agent deep in a long work stint looks quiet. The
+threshold sits far past presence-staleness, and a lease within 5 minutes of its
+TTL is left to expire on its own. An agent that works longer than the threshold
+keeps its lease alive by re-claiming (a self-claim extends) or parking waits.
+
+The ownership transfer is a real `ESCALATE` message, not a bookkeeping row —
+that is what makes it ring the inheritor's parked doorbell, which the
+read-side recompute alone cannot do.
+
+Every sweep action is idempotent: a second sweep over a repaired bus writes
+nothing, and the test suite holds it to that. Operator messages publish as
+`agora`, signed by a system key it maintains on `bus.keys`.
+
+**Degradation is the design, not an accident** (this closes the spec's Q4):
+a single operator instance needs no failover because a dead operator returns
+the bus to exactly what it was before the operator existed — every guarantee
+in this protocol is enforced client-side, and the entire test suite for
+convergence, signing and read integrity runs with no operator present.
 
 ## Identity and signing
 

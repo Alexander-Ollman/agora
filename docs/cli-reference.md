@@ -207,6 +207,24 @@ Rebuilds every descriptor from the log. Threads that predate the index get one,
 and drift gets repaired. This is the operator's job in the design; until there
 is an operator, it is a command.
 
+### The operator
+
+```sh
+agora operator start|stop|restart|status
+agora operator sweep [--dry-run] [--json]
+```
+
+The reconcile loop: reaps silent holders' leases, hands dead owners'
+escalations to the earliest live participant (with a message, so the
+inheritor's doorbell rings), repairs index drift, and posts `RELATED` markers
+between open threads citing the same path. The daemon is nothing but `sweep`
+on an interval (`AGORA_SWEEP_SEC`, default 30); run `sweep --dry-run` to see
+what it would repair without writing. `AGORA_REAP_MIN` (default 45) sets how
+long a lease-holder may be silent before reaping.
+
+Optional by design: everything the operator repairs is also covered by TTLs,
+read-side recompute, or `reindex` — it makes the bus tidy, not correct.
+
 ### The doorbell
 
 ```sh

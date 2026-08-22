@@ -1,0 +1,41 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * The operator daemon: `agora operator sweep` on an interval, and nothing
+ * else. All reconcile logic lives in the sweep so it can be tested as a
+ * synchronous one-shot; this process only supplies the heartbeat. Detached
+ * from whatever session started it, tracked by pidfile — the same lifecycle
+ * as the dashboard, for the same reason: a monitor that dies with its parent
+ * session is not much use (and that is exactly how the first dashboard died).
+ */
+
+const { spawnSync } = require('child_process');
+const path = require('path');
+
+const CLI = path.join(__dirname, 'agora');
+const INTERVAL = (Number(process.env.AGORA_SWEEP_SEC) || 30) * 1000;
+
+let stopping = false;
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+  process.on(sig, () => { stopping = true; });
+}
+
+const stamp = () => new Date().toISOString();
+console.log(`${stamp()} operator up — sweeping every ${INTERVAL / 1000}s`);
+
+(async () => {
+  while (!stopping) {
+    const res = spawnSync(process.execPath, [CLI, 'operator', 'sweep'], {
+      encoding: 'utf8', timeout: Math.max(INTERVAL * 4, 120000),
+    });
+    const out = (res.stdout || '').trim();
+    const err = (res.stderr || '').trim();
+    // Quiet sweeps stay out of the log; repairs and failures go in.
+    if (res.status !== 0) console.log(`${stamp()} sweep FAILED (exit ${res.status})${err ? ': ' + err : ''}`);
+    else if (out && !/nothing to repair/.test(out)) console.log(`${stamp()} ${out.replace(/\n/g, `\n${stamp()} `)}`);
+    // A broker outage is survivable — keep sweeping; it will come back.
+    await new Promise((r) => setTimeout(r, INTERVAL));
+  }
+  console.log(`${stamp()} operator stopping`);
+})();

@@ -450,6 +450,15 @@ function tokens(s) {
  * from the previous descriptor.
  */
 function refreshDescriptor(thread, extra = {}) {
+  const d = computeDescriptor(thread, extra);
+  produce(T.index, thread, d);
+  return d;
+}
+
+/** The descriptor a thread's log implies, without publishing it. The operator
+ *  diffs this against what is stored and writes only on drift — a compacted
+ *  topic churned with identical records every sweep is self-inflicted noise. */
+function computeDescriptor(thread, extra = {}) {
   const prev = indexRead().desc.get(thread) || {};
   const msgs = readAll(T.threads).filter((e) => e.thread === thread)
     .sort((a, b) => (a.ts < b.ts ? -1 : 1));
@@ -490,8 +499,19 @@ function refreshDescriptor(thread, extra = {}) {
     opened_at: prev.opened_at || (opener ? opener.ts : now()),
     last_at: msgs.length ? msgs[msgs.length - 1].ts : now(),
   };
-  produce(T.index, thread, d);
   return d;
+}
+
+/** The fields that make two descriptors materially different. id/ts churn on
+ *  every write and opened_at is sticky, so none of them count as drift. */
+function descriptorMaterial(d) {
+  return JSON.stringify({
+    title: d.title || null, work_item: d.work_item || null, status: d.status,
+    hop: d.hop, participants: d.participants || [],
+    paths: [...(d.paths || [])].sort(), tags: d.tags || [],
+    superseded_by: d.superseded_by || null, absorbed: d.absorbed || [],
+    last_at: d.last_at || null,
+  });
 }
 
 /**
@@ -593,7 +613,8 @@ function render(e, me) {
   if (e.subject) head.push(`path=${e.subject}`);
   const out = [head.join('  ')];
   if (e.reply_to) out.push(`  reply-to: ${e.reply_to}`);
-  if (e.into) out.push(`  superseded-by: ${e.into}  (read it — this thread's evidence travels with it)`);
+  if (e.type === 'SUPERSEDE' && e.into) out.push(`  superseded-by: ${e.into}  (read it — this thread's evidence travels with it)`);
+  if (e.type === 'RELATED' && e.into) out.push(`  related: ${e.into}  (a suggestion, not a merge — merging is your judgement)`);
   if (e.body) out.push(`  ${e.body}`);
   for (const r of e.refs || []) {
     const tag = r.stale === 'deleted' ? '  [REF DELETED SINCE]'
@@ -678,6 +699,13 @@ cmds.doctor = () => {
   console.log(`agent     ${process.env.AGORA_AGENT || '(unset — pass --as)'}`);
   const l = leases();
   console.log(`leases    ${l.size ? [...l.keys()].join(', ') : 'none held'}`);
+  const opPid = (() => {
+    try {
+      const pid = Number(fs.readFileSync(path.join(tmpDir(), 'agora-operator.pid'), 'utf8').trim());
+      process.kill(pid, 0); return pid;
+    } catch { return null; }
+  })();
+  console.log(`operator  ${opPid ? `running (pid ${opPid})` : 'not running (optional — TTLs and read-side recompute cover the gaps)'}`);
   if (!healthy || missing.length) process.exit(EXIT.NOBROKER);
 };
 
@@ -685,7 +713,15 @@ cmds.doctor = () => {
 cmds.join = (flags) => {
   const agent = agentName(flags);
   const g = groupFor(agent);
-  rpk(['group', 'seek', g, '--to', 'end', '--topics', WATCH.join(',')]);
+  // --allow-new-topics matters: without it, seeking a group that has never
+  // committed an offset fails — and it fails on exit code alone, so for the
+  // entire life of the prototype a brand-new agent's join silently did not
+  // seek, and its first wait replayed all of history. Check the status.
+  const sought = rpk(['group', 'seek', g, '--to', 'end', '--allow-new-topics',
+    '--topics', WATCH.join(',')]);
+  if (sought.status !== 0) {
+    die(EXIT.NOBROKER, `could not seek ${g} to the live end: ${(sought.stderr || sought.stdout || '').trim()}`);
+  }
   produce(T.presence, agent, {
     id: mkid(), ts: now(), type: 'PRESENCE', from: { agent }, state: 'listening',
   });
@@ -1088,6 +1124,243 @@ cmds.web = (flags, args) => {
   die(EXIT.REFUSED, 'usage: agora web start|stop|restart|status');
 };
 
+/* ── the operator ──────────────────────────────────────────────────── */
+
+/**
+ * A reconcile loop, not a gatekeeper. Nobody calls the operator and nothing
+ * waits on it: every write it makes is one a client could have made, so a dead
+ * operator degrades the bus to exactly what it was before the operator
+ * existed — leases wait out their TTL instead of being reaped, escalation
+ * ownership goes stale until someone runs `escalations`, descriptors drift
+ * until someone runs `reindex`, and related threads go unnoticed. Nothing
+ * blocks. That degradation story is the Q4 answer, and it is tested, because
+ * an untested fallback is how the first dashboard died with a background task.
+ *
+ * The sweep is deliberately a one-shot command. The daemon is nothing but
+ * `sweep` on an interval — which means the whole reconcile behavior can be
+ * tested synchronously, and a human can run one sweep by hand and read what
+ * it did.
+ */
+
+function tmpDir() {
+  return process.env.AGORA_TMP_DIR || path.join(REPO, '.agora', 'tmp');
+}
+
+const REAP_MIN = Number(process.env.AGORA_REAP_MIN) || 45;
+
+/** The system identity. Hop-cap escalations and operator repairs publish as
+ *  "agora"; give that handle a key so system messages verify like anyone
+ *  else's. Idempotent, and self-heals a key that never reached the bus. */
+function ensureSystemIdentity() {
+  const have = loadIdentity('agora');
+  const pub = keysTable().byAgent.get('agora');
+  if (have && pub && pub.public_pem === have.public_pem) return false;
+  let ident = have;
+  if (!ident) {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+    ident = {
+      agent: 'agora', base: 'agora',
+      principal: `agent://agora-operator/${path.basename(REPO)}/${crypto.randomBytes(4).toString('hex')}`,
+      runtime: 'agora-operator',
+      public_pem: publicKey.export({ type: 'spki', format: 'pem' }),
+      private_pem: privateKey.export({ type: 'pkcs8', format: 'pem' }),
+      enrolled_at: now(),
+    };
+    fs.mkdirSync(identityDir(), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(identityFile('agora'), JSON.stringify(ident, null, 2), { mode: 0o600 });
+  }
+  produce(T.keys, 'agora', {
+    id: mkid(), ts: now(), type: 'KEY',
+    agent: 'agora', principal: ident.principal, public_pem: ident.public_pem,
+    runtime: 'agora-operator', workspace: path.basename(REPO),
+  });
+  return true;
+}
+
+/**
+ * One reconcile pass. Reads the whole bus once, compares reality to intent,
+ * and returns the list of repairs — which `--dry-run` prints without making.
+ * Every action is idempotent: a second sweep over a repaired bus is a no-op,
+ * and the tests hold the operator to that, because a reconciler that churns
+ * is a reconciler you eventually turn off.
+ */
+function operatorSweep(dry) {
+  const actions = [];
+  const act = (kind, detail, fn) => {
+    actions.push({ kind, detail });
+    if (!dry) fn();
+  };
+
+  if (dry) {
+    const have = loadIdentity('agora');
+    const pub = keysTable().byAgent.get('agora');
+    if (!have || !pub || pub.public_pem !== have.public_pem) {
+      actions.push({ kind: 'identity', detail: 'system key for "agora" needs publishing' });
+    }
+  } else if (ensureSystemIdentity()) {
+    actions.push({ kind: 'identity', detail: 'published the system key for "agora"' });
+  }
+
+  const live = presenceTable();
+  const silentMin = (a) => {
+    const p = live.get(a);
+    return p ? Math.round((Date.now() - new Date(p.ts)) / 60000) : Infinity;
+  };
+
+  // 1. Leases held by the silent. TTL already bounds every lease; this only
+  // matters for long grants whose holder stopped heartbeating. The threshold
+  // is deliberately far past presence-staleness: an agent deep in a long work
+  // stint between doorbells looks quiet, and reaping a live worker's lease is
+  // the exact clobbering leases exist to prevent.
+  for (const [p, lease] of leases()) {
+    const holder = lease.from.agent;
+    const quiet = silentMin(holder);
+    const leftMin = Math.round((new Date(lease.expires_at) - Date.now()) / 60000);
+    if (quiet >= REAP_MIN && leftMin > 5) {
+      act('reap-lease', `${p} (held by ${holder}, silent ${quiet === Infinity ? 'forever' : quiet + 'm'}, ${leftMin}m left)`,
+        () => produce(T.claims, p, {
+          id: mkid(), ts: now(), type: 'RELEASE', from: { agent: 'agora' },
+          subject: p, on_behalf_of: holder,
+          body: `lease reaped: ${holder} silent ${quiet === Infinity ? 'with no presence record' : quiet + 'm'} (threshold ${REAP_MIN}m)`,
+        }));
+    }
+  }
+
+  // 2. Escalations owned by the dead. The stamped owner may have gone away;
+  // the reader-side recompute already handles display, but only a message on
+  // the bus *wakes* the inheritor's parked doorbell.
+  const byThread = new Map();
+  for (const e of readAll(T.threads)) {
+    if (!e.thread) continue;
+    if (!byThread.has(e.thread)) byThread.set(e.thread, []);
+    byThread.get(e.thread).push(e);
+  }
+  for (const [id, msgs] of byThread) {
+    msgs.sort((a, b) => (a.ts < b.ts ? -1 : 1));
+    const escs = msgs.filter((m) => m.type === 'ESCALATE');
+    if (!escs.length || msgs.some((m) => m.type === 'DECIDE')) continue;
+    const stamped = escs[escs.length - 1].ask_human || null;
+    const current = escalationOwner(msgs);
+    if (current && current !== stamped) {
+      act('escalation-owner', `${id}: ${stamped || 'nobody'} → ${current}`,
+        () => {
+          produce(T.threads, id, {
+            id: mkid(), ts: now(), type: 'ESCALATE', from: { agent: 'agora' },
+            thread: id, hop: msgs.reduce((m, e) => Math.max(m, e.hop || 0), 0),
+            body: `Escalation ownership passed to ${current} — ${stamped || 'the prior owner'} has gone quiet. Ask your user and DECIDE.`,
+            digest: escs[0].digest || null,
+            ask_human: current,
+          });
+          refreshQuietly(id);        // the post moved last_at; keep the sweep idempotent
+        });
+    }
+  }
+
+  // 3. Descriptor drift. Clients write the index on every publish; this
+  // catches what a crashed client missed and threads that predate the index.
+  const knownDesc = indexRead().desc;
+  for (const id of byThread.keys()) {
+    const fresh = computeDescriptor(id);
+    const stored = knownDesc.get(id);
+    if (!stored || descriptorMaterial(stored) !== descriptorMaterial(fresh)) {
+      act('index-repair', `${id} ${stored ? 'drifted' : 'missing'} → ${fresh.status}, hop ${fresh.hop}`,
+        () => produce(T.index, id, fresh));
+    }
+  }
+
+  // 4. Open threads sharing a path get a RELATED pointer in each direction —
+  // once. It suggests; it never merges. Merging is a judgement about subject
+  // matter, and the operator has no view of subject matter, only of paths.
+  const open = [...knownDesc.values()].filter((d) => d.status === 'open');
+  for (let i = 0; i < open.length; i++) {
+    for (let j = i + 1; j < open.length; j++) {
+      const a = open[i]; const b = open[j];
+      const shared = (a.paths || []).filter((x) => (b.paths || []).includes(x));
+      if (!shared.length) continue;
+      for (const [from, to] of [[a, b], [b, a]]) {
+        const already = (byThread.get(from.thread) || []).some(
+          (m) => m.type === 'RELATED' && m.into === to.thread);
+        if (already) continue;
+        act('related', `${from.thread} ⇄ ${to.thread} (share ${shared.join(', ')})`,
+          () => {
+            produce(T.threads, from.thread, {
+              id: mkid(), ts: now(), type: 'RELATED', from: { agent: 'agora' },
+              thread: from.thread, into: to.thread, hop: null,
+              body: `${to.thread} is also discussing ${shared.join(', ')} — agora read ${to.thread}. `
+                + 'Related, not merged: if they are one subject, supersede; if not, carry on.',
+              refs: [],
+            });
+            refreshQuietly(from.thread);   // the post moved last_at; keep the sweep idempotent
+          });
+      }
+    }
+  }
+
+  return actions;
+}
+
+cmds.operator = (flags, args) => {
+  const sub = args[0] || 'status';
+  const dir = tmpDir();
+  const PID = path.join(dir, 'agora-operator.pid');
+  const LOG = path.join(dir, 'agora-operator.log');
+  fs.mkdirSync(dir, { recursive: true });
+
+  if (sub === 'sweep') {
+    const dry = !!flags['dry-run'];
+    const actions = operatorSweep(dry);
+    if (flags.json) return console.log(JSON.stringify({ at: now(), dry, actions }));
+    if (!actions.length) return console.log(`sweep: nothing to repair${dry ? ' (dry run)' : ''}`);
+    for (const a of actions) console.log(`${dry ? 'would ' : ''}${a.kind.padEnd(17)} ${a.detail}`);
+    console.log(`${actions.length} repair${actions.length > 1 ? 's' : ''}${dry ? ' pending (dry run — nothing written)' : ''}`);
+    return;
+  }
+
+  const running = () => {
+    if (!fs.existsSync(PID)) return null;
+    const pid = Number(fs.readFileSync(PID, 'utf8').trim());
+    try { process.kill(pid, 0); return pid; } catch { fs.unlinkSync(PID); return null; }
+  };
+  const sleepSync = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+  const stopPid = (pid) => {
+    try { process.kill(pid, 'SIGTERM'); } catch { return; }
+    for (let i = 0; i < 50; i++) { sleepSync(100); try { process.kill(pid, 0); } catch { return; } }
+    try { process.kill(pid, 'SIGKILL'); sleepSync(200); } catch { /* gone */ }
+  };
+
+  if (sub === 'status') {
+    const pid = running();
+    console.log(pid
+      ? `running  pid ${pid}  (sweep every ${Number(process.env.AGORA_SWEEP_SEC) || 30}s, log ${LOG})`
+      : 'stopped  — degraded, not broken: TTLs, read-side recompute and reindex still cover everything');
+    return process.exit(pid ? EXIT.OK : EXIT.REFUSED);
+  }
+
+  if (sub === 'stop') {
+    const pid = running();
+    if (pid) { stopPid(pid); try { fs.unlinkSync(PID); } catch {} }
+    return console.log(pid ? `stopped pid ${pid}` : 'not running');
+  }
+
+  if (sub === 'start' || sub === 'restart') {
+    const pid = running();
+    if (pid && sub === 'start') return console.log(`already running  pid ${pid}`);
+    if (pid) { stopPid(pid); try { fs.unlinkSync(PID); } catch {} }
+    const out = fs.openSync(LOG, 'a');
+    const child = require('child_process').spawn(
+      process.execPath, [path.join(REPO, 'bin', 'agora-operator')],
+      { detached: true, stdio: ['ignore', out, out] },
+    );
+    child.unref();
+    fs.writeFileSync(PID, String(child.pid));
+    console.log(`started pid ${child.pid}  (sweep every ${Number(process.env.AGORA_SWEEP_SEC) || 30}s)`);
+    console.log(`log     ${LOG}`);
+    return;
+  }
+
+  die(EXIT.REFUSED, 'usage: agora operator sweep [--dry-run] [--json] | start | stop | restart | status');
+};
+
 /* ── enrollment ────────────────────────────────────────────────────── */
 
 /**
@@ -1159,7 +1432,12 @@ cmds.enroll = (flags) => {
 
   // Line up: doorbell to the live end, presence announced. Same effect as
   // `join`, folded in so enroll is genuinely one call.
-  rpk(['group', 'seek', groupFor(handle), '--to', 'end', '--topics', WATCH.join(',')]);
+  const sought = rpk(['group', 'seek', groupFor(handle), '--to', 'end',
+    '--allow-new-topics', '--topics', WATCH.join(',')]);
+  if (sought.status !== 0) {
+    die(EXIT.NOBROKER, `enrolled, but could not seek ${groupFor(handle)} to the live end: `
+      + `${(sought.stderr || sought.stdout || '').trim()}`);
+  }
   heartbeat(handle, 'listening');
 
   // Context: the map, not the territory.
@@ -1582,6 +1860,8 @@ cmds.help = () => {
   escalations     [--as A]            open escalations and who owes the ask
 
   web             start|stop|restart|status         dashboard on :7788
+  operator        start|stop|restart|status         the reconcile loop
+                  sweep [--dry-run] [--json]        one pass, by hand
 
   wait            --as A [--timeout 900] [--json]   the doorbell
   catchup         [--thread T] [--json]             ordered replay
