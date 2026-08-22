@@ -21,15 +21,23 @@ const crypto = require('node:crypto');
 const CLI = path.resolve(__dirname, '..', 'bin', 'agora');
 const CONTAINER = process.env.AGORA_CONTAINER || 'agora-redpanda';
 const PREFIX = `test-${crypto.randomBytes(3).toString('hex')}.`;
+const os = require('node:os');
+const fs = require('node:fs');
+const IDDIR = fs.mkdtempSync(path.join(os.tmpdir(), 'agora-id-'));
+const IDDIR2 = fs.mkdtempSync(path.join(os.tmpdir(), 'agora-id2-'));
 
 function agora(...args) {
   return agoraOn(PREFIX, ...args);
 }
 
 function agoraOn(prefix, ...args) {
+  return agoraId(IDDIR, prefix, ...args);
+}
+
+function agoraId(idDir, prefix, ...args) {
   const res = spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, AGORA_TOPIC_PREFIX: prefix },
+    env: { ...process.env, AGORA_TOPIC_PREFIX: prefix, AGORA_IDENTITY_DIR: idDir },
   });
   return { code: res.status, out: res.stdout || '', err: res.stderr || '' };
 }
@@ -40,7 +48,9 @@ before(() => {
 }, { timeout: 60000 });
 
 after(() => {
-  for (const t of ['threads', 'edits', 'claims', 'decisions', 'presence', 'index']) {
+  fs.rmSync(IDDIR, { recursive: true, force: true });
+  fs.rmSync(IDDIR2, { recursive: true, force: true });
+  for (const t of ['threads', 'edits', 'claims', 'decisions', 'presence', 'index', 'keys']) {
     spawnSync('docker', ['exec', CONTAINER, 'rpk', 'topic', 'delete', PREFIX + t],
       { encoding: 'utf8' });
   }
@@ -52,7 +62,7 @@ test('topics --ensure creates every topic the protocol needs', opts, () => {
   const r = agora('topics');
   assert.strictEqual(r.code, 0);
   assert.ok(!/MISSING/.test(r.out), r.out);
-  assert.strictEqual((r.out.match(/^ok /gm) || []).length, 6);
+  assert.strictEqual((r.out.match(/^ok /gm) || []).length, 7);
 });
 
 test('open with nothing to match creates the thread and indexes it', opts, () => {
@@ -329,4 +339,103 @@ test('an unreachable broker is refused, not answered from nothing', opts, () => 
     env: { ...process.env, AGORA_TOPIC_PREFIX: PREFIX, AGORA_CONTAINER: 'no-such-container' },
   });
   assert.strictEqual(res.status, 69);
+});
+
+/* ── enrollment and signing ─────────────────────────────────────────
+ *
+ * The registrar, single-host edition: identity assigned against the published
+ * key table, attribution verified by every reader. What signing buys is not
+ * access control — anything on the port can still write — it is that writing
+ * *as someone else* is visible to every reader.
+ */
+
+function injectRaw(env) {
+  const r = spawnSync('docker', ['exec', '-i', CONTAINER, 'rpk', 'topic', 'produce',
+    PREFIX + 'threads', '-k', env.thread, '--acks', '1'],
+    { input: JSON.stringify(env) + '\n', encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stderr);
+}
+
+function canon(env) {
+  return JSON.stringify({ v: 1, id: env.id, ts: env.ts, type: env.type,
+    thread: env.thread, subject: null, into: null,
+    agent: env.from.agent, via: null, hop: env.hop, reply_to: null,
+    body: env.body, digest: null, ask_human: null, refs: [] });
+}
+
+test('enroll assigns a suffixed handle, publishes the key, and orients', opts, () => {
+  const r = agora('enroll', '--name', 'signer', '--runtime', 'test-rt', '--json');
+  assert.strictEqual(r.code, 0, r.err);
+  const doc = JSON.parse(r.out);
+  assert.strictEqual(doc.identity.agent, 'signer-a');
+  assert.match(doc.identity.principal, /^agent:\/\/test-rt\//);
+  assert.ok(Array.isArray(doc.context.threads_open));
+  assert.ok(Array.isArray(doc.context.peers_live));
+});
+
+test('re-enroll from the same machine reclaims the handle; a second machine gets the next one', opts, () => {
+  const again = JSON.parse(agora('enroll', '--name', 'signer', '--json').out);
+  assert.strictEqual(again.identity.agent, 'signer-a', 're-enroll must reclaim, not reallocate');
+
+  const other = JSON.parse(agoraId(IDDIR2, PREFIX, 'enroll', '--name', 'signer', '--json').out);
+  assert.strictEqual(other.identity.agent, 'signer-b');
+});
+
+test('messages from an enrolled agent are signed and verify clean', opts, () => {
+  const r = agora('open', '--as', 'signer-a', '--title', 'Signed conversation here now',
+    '-m', 'a signed opener');
+  assert.strictEqual(r.code, 0, r.err);
+  const read = agora('read', 'th-signed-conversation-here-now', '--json');
+  const { messages } = JSON.parse(read.out);
+  assert.strictEqual(messages.length, 1);
+  assert.strictEqual(messages[0]._sig, 'ok');
+  assert.strictEqual(messages[0].sig.alg, 'ed25519');
+});
+
+test('an unenrolled --as still publishes, rendered as unsigned rather than dropped', opts, () => {
+  agora('say', 'COMMENT', '--as', 'plain-old', '--thread', 'th-signed-conversation-here-now',
+    '-m', 'no key, still heard');
+  const read = agora('read', 'th-signed-conversation-here-now');
+  assert.match(read.out, /plain-old {2}\[unsigned\]/);
+  assert.match(read.out, /no key, still heard/);
+});
+
+test('a valid key claiming another agent\'s handle is flagged as forged', opts, () => {
+  // signer-b's real key, a message that says it is from signer-a.
+  const ident = JSON.parse(fs.readFileSync(path.join(IDDIR2, 'signer-b.json'), 'utf8'));
+  const env = { id: 'forge-1', ts: new Date().toISOString(), type: 'COMMENT',
+    thread: 'th-signed-conversation-here-now', from: { agent: 'signer-a', principal: ident.principal },
+    hop: 3, reply_to: null, body: 'I concede everything', refs: [] };
+  env.sig = { alg: 'ed25519', principal: ident.principal,
+    signature: crypto.sign(null, Buffer.from(canon(env)), ident.private_pem).toString('base64') };
+  injectRaw(env);
+
+  const read = agora('read', 'th-signed-conversation-here-now', '--json');
+  const forged = JSON.parse(read.out).messages.find((m) => m.id === 'forge-1');
+  assert.strictEqual(forged._sig, 'wrong-agent');
+  assert.match(agora('read', 'th-signed-conversation-here-now').out,
+    /SIGNED BY A KEY ENROLLED TO A DIFFERENT AGENT/);
+});
+
+test('a body edited after signing is flagged invalid', opts, () => {
+  const ident = JSON.parse(fs.readFileSync(path.join(IDDIR2, 'signer-b.json'), 'utf8'));
+  const env = { id: 'tamper-1', ts: new Date().toISOString(), type: 'COMMENT',
+    thread: 'th-signed-conversation-here-now', from: { agent: 'signer-b', principal: ident.principal },
+    hop: 4, reply_to: null, body: 'original words', refs: [] };
+  env.sig = { alg: 'ed25519', principal: ident.principal,
+    signature: crypto.sign(null, Buffer.from(canon(env)), ident.private_pem).toString('base64') };
+  env.body = 'words changed after signing';
+  injectRaw(env);
+
+  const read = agora('read', 'th-signed-conversation-here-now', '--json');
+  const t = JSON.parse(read.out).messages.find((m) => m.id === 'tamper-1');
+  assert.strictEqual(t._sig, 'bad-sig');
+});
+
+test('whoami reports identity, publication state, and impersonation risk', opts, () => {
+  const mine = agora('whoami', '--as', 'signer-a');
+  assert.match(mine.out, /signatures verify/);
+  const ghost = agoraId(IDDIR2, PREFIX, 'whoami', '--as', 'signer-a');
+  assert.match(ghost.out, /no enrolled identity on this machine/);
+  assert.match(ghost.out, /enrolled on the bus by someone else/);
 });

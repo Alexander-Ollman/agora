@@ -38,6 +38,7 @@ const T = {
   decisions: PREFIX + 'decisions',
   presence:  PREFIX + 'presence',
   index:     PREFIX + 'index',
+  keys:      PREFIX + 'keys',
 };
 
 /**
@@ -54,6 +55,7 @@ const TOPIC_SPEC = [
   [T.presence,  ['--partitions', '1', '--config', 'cleanup.policy=compact',
                  '--config', 'retention.ms=3600000']],
   [T.index,     ['--partitions', '1', '--config', 'cleanup.policy=compact']],
+  [T.keys,      ['--partitions', '1', '--config', 'cleanup.policy=compact']],
 ];
 
 // What a parked `wait` listens to. Presence and index are excluded on purpose,
@@ -89,6 +91,13 @@ function rpk(args, opts = {}) {
 }
 
 function produce(topic, key, obj) {
+  // Sign anything with an author whose identity is enrolled on this machine.
+  // Records without a `from` (descriptors) and authors without a key (plain
+  // --as, the human lane) publish unsigned — and render as such.
+  if (obj.from && obj.from.agent && !obj.sig) {
+    const ident = loadIdentity(obj.from.agent);
+    if (ident) signEnvelope(obj, ident);
+  }
   const line = JSON.stringify(obj);
   if (line.includes('\n')) die(EXIT.REFUSED, 'record contains a raw newline');
   const res = spawnSync(
@@ -104,6 +113,7 @@ function produce(topic, key, obj) {
   _readCache.delete(topic);
   _boundsCache.delete(topic);
   _topicSet = null;
+  if (topic === T.keys) _keysMemo = null;
   return obj;
 }
 
@@ -273,6 +283,116 @@ function markStale(env) {
     const cur = shaOf(r.path);
     r.stale = cur === null ? 'deleted' : (cur !== r.sha256);
   }
+  return env;
+}
+
+/* ── identity and signing ──────────────────────────────────────────── */
+
+/**
+ * The registrar, single-host edition. There is no service to call: identity
+ * lives in a keypair on disk, the public half is published to the compacted
+ * `bus.keys` topic, and every reader verifies for itself. Same instinct as the
+ * index — keep the broker dumb and the clients able to answer without a
+ * control plane in the path.
+ *
+ * What signing buys here is attribution, not access. Anything on the port can
+ * still write; what it can no longer do is write *as someone else* without the
+ * forgery being visible to every reader. Access control is the hosted mode's
+ * problem (SASL/ACL); attribution is this one's.
+ */
+
+function identityDir() {
+  return process.env.AGORA_IDENTITY_DIR || path.join(REPO, '.agora', 'identity');
+}
+
+function identityFile(agent) { return path.join(identityDir(), `${agent}.json`); }
+
+function loadIdentity(agent) {
+  try {
+    const d = JSON.parse(fs.readFileSync(identityFile(agent), 'utf8'));
+    return d && d.principal && d.private_pem ? d : null;
+  } catch { return null; }
+}
+
+let _keysMemo = null;
+/** principal → key record, and handle → key record. Last write per key wins,
+ *  which is also how revocation would work: publish a superseding record. */
+function keysTable() {
+  if (_keysMemo) return _keysMemo;
+  const byPrincipal = new Map(); const byAgent = new Map();
+  for (const e of readAll(T.keys)) {
+    if (e.type !== 'KEY' || !e.principal) continue;
+    byPrincipal.set(e.principal, e);
+    if (e.agent) byAgent.set(e.agent, e);
+  }
+  return (_keysMemo = { byPrincipal, byAgent });
+}
+
+/**
+ * The canonical form: the signed fields, serialized in one fixed order, with
+ * absent fields pinned to null so that "field missing" and "field null" cannot
+ * be two different byte strings that verify differently. Refs are reduced to
+ * the three fields that carry meaning; `_offset`-style reader annotations and
+ * the signature itself are never part of what is signed.
+ */
+function canonicalForm(env) {
+  const refs = (env.refs || []).map((r) => ({
+    path: r.path || null, lines: r.lines || null, sha256: r.sha256 || null,
+  }));
+  return JSON.stringify({
+    v: 1,
+    id: env.id || null,
+    ts: env.ts || null,
+    type: env.type || null,
+    thread: env.thread || null,
+    subject: env.subject || null,
+    into: env.into || null,
+    agent: (env.from && env.from.agent) || null,
+    via: (env.from && env.from.via) || null,
+    hop: env.hop == null ? null : env.hop,
+    reply_to: env.reply_to || null,
+    body: env.body || null,
+    digest: env.digest || null,
+    ask_human: env.ask_human || null,
+    refs,
+  });
+}
+
+function signEnvelope(env, ident) {
+  const sig = crypto.sign(null, Buffer.from(canonicalForm(env)), ident.private_pem);
+  env.from.principal = ident.principal;
+  env.sig = { alg: 'ed25519', principal: ident.principal, signature: sig.toString('base64') };
+  return env;
+}
+
+/**
+ * Verify one envelope against the published keys.
+ *
+ * Returns: 'ok' · 'unsigned' · 'unknown-key' · 'bad-sig' · 'wrong-agent'.
+ * Nothing is ever dropped for failing — an unverifiable message renders as
+ * untrusted and stays in the conversation, because silently losing a peer's
+ * message is worse than reading one you distrust. 'wrong-agent' is the case
+ * signing exists for: a valid signature from a key that was enrolled to a
+ * different handle than the message claims to be from.
+ */
+function verifyEnvelope(env) {
+  if (!env.sig || !env.sig.signature) return 'unsigned';
+  const rec = keysTable().byPrincipal.get(env.sig.principal);
+  if (!rec || !rec.public_pem) return 'unknown-key';
+  let good = false;
+  try {
+    good = crypto.verify(null, Buffer.from(canonicalForm(env)),
+      rec.public_pem, Buffer.from(env.sig.signature, 'base64'));
+  } catch { good = false; }
+  if (!good) return 'bad-sig';
+  if (env.from && env.from.agent !== rec.agent) return 'wrong-agent';
+  return 'ok';
+}
+
+/** Reader-side annotation, alongside markStale: stamp the verification verdict
+ *  so JSON consumers get it without re-deriving the canonical form. */
+function markVerified(env) {
+  env._sig = verifyEnvelope(env);
   return env;
 }
 
@@ -461,6 +581,13 @@ function escalationOwner(msgs) {
 function render(e, me) {
   const who = e.from ? e.from.agent : 'agora';
   const head = [`[${e.type}]`, `${who}`];
+  // Attribution verdict, computed at read time. Quiet when good; loud when the
+  // signature claims a handle the key was never enrolled to.
+  const v = e._sig !== undefined ? e._sig : verifyEnvelope(e);
+  if (v === 'wrong-agent') head.push('⚠ SIGNED BY A KEY ENROLLED TO A DIFFERENT AGENT');
+  else if (v === 'bad-sig') head.push('⚠ SIGNATURE INVALID');
+  else if (v === 'unknown-key') head.push('[key not on the bus]');
+  else if (v === 'unsigned') head.push('[unsigned]');
   if (e.thread) head.push(`thread=${e.thread}`);
   if (e.hop) head.push(`hop=${e.hop}/${HOP_CAP}`);
   if (e.subject) head.push(`path=${e.subject}`);
@@ -794,7 +921,7 @@ cmds.wait = (flags) => {
   if (!line) process.exit(EXIT.TIMEOUT);
 
   let env;
-  try { env = markStale(JSON.parse(JSON.parse(line).value)); }
+  try { env = markVerified(markStale(JSON.parse(JSON.parse(line).value))); }
   catch { die(EXIT.REFUSED, 'undecodable record on the bus'); }
 
   // Your own messages come back to you; skip them rather than waking on an echo.
@@ -810,7 +937,7 @@ cmds.catchup = (flags) => {
     .map(markStale);
   if (!all.length) return console.log('(nothing on the bus yet)');
   const me = flags.as || process.env.AGORA_AGENT;
-  console.log(all.map((e) => (flags.json ? JSON.stringify(e) : render(e, me))).join('\n\n'));
+  console.log(all.map((e) => (flags.json ? JSON.stringify(markVerified(e)) : render(e, me))).join('\n\n'));
 };
 
 cmds.threads = () => {
@@ -959,6 +1086,145 @@ cmds.web = (flags, args) => {
   }
 
   die(EXIT.REFUSED, 'usage: agora web start|stop|restart|status');
+};
+
+/* ── enrollment ────────────────────────────────────────────────────── */
+
+/**
+ * One call to be oriented. Enroll replaces the join/list/escalations dance:
+ * it assigns an identity, publishes the public key, seeks the doorbell to the
+ * live end, and returns everything the agent needs to start working.
+ *
+ * The handle is assigned, not chosen. `--name claude` is a request for a base;
+ * what comes back is `claude-a` (or -b, -c…), allocated against the published
+ * key table, because the handle is what everything else attributes to and two
+ * sessions must not be able to pick the same one. Re-enrolling from the same
+ * machine reclaims the same handle by proving it still holds the private key.
+ *
+ * The context deliberately returns descriptors and pointers, not full thread
+ * histories. The spec's first draft said "with full history"; the Q9
+ * measurement then found bare history replay is the one unbounded cost on the
+ * bus (~145k tokens and growing, against ~64 for descriptors). Orientation
+ * hands you the map; `agora read <thread>` is one command away for the
+ * conversations that turn out to matter.
+ */
+cmds.enroll = (flags) => {
+  const base = slug(flags.name || process.env.AGORA_RUNTIME || 'agent');
+  if (!base) die(EXIT.REFUSED, 'usage: agora enroll --name <base> [--runtime R] [--json]');
+  const runtime = String(flags.runtime || flags.name || base);
+  const keys = keysTable();
+
+  // Reclaim: a local key file whose public half matches the published record
+  // is the same session lineage, whatever "session" the runtime thinks it is.
+  let handle = null; let ident = null;
+  try {
+    for (const f of fs.readdirSync(identityDir())) {
+      if (!f.endsWith('.json')) continue;
+      const cand = JSON.parse(fs.readFileSync(path.join(identityDir(), f), 'utf8'));
+      const pub = keys.byAgent.get(cand.agent);
+      if (cand.base === base && pub && pub.public_pem === cand.public_pem) {
+        handle = cand.agent; ident = cand; break;
+      }
+    }
+  } catch { /* no identity dir yet — fresh machine */ }
+
+  if (!handle) {
+    // Allocate the next free suffix, then prove we won it: publish, re-read,
+    // and if the record that survived is not our key, someone else claimed the
+    // handle in the same window — take the next one.
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+    const pubPem = publicKey.export({ type: 'spki', format: 'pem' });
+    const privPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+    const suffixes = 'abcdefghijklmnopqrstuvwxyz';
+    for (let i = 0; i < suffixes.length && !handle; i++) {
+      const cand = `${base}-${suffixes[i]}`;
+      if (keys.byAgent.has(cand)) continue;
+      const principal = `agent://${runtime}/${path.basename(REPO)}/${crypto.randomBytes(4).toString('hex')}`;
+      produce(T.keys, cand, {
+        id: mkid(), ts: now(), type: 'KEY',
+        agent: cand, principal, public_pem: pubPem,
+        runtime, workspace: path.basename(REPO),
+      });
+      const won = keysTable().byAgent.get(cand);
+      if (won && won.public_pem === pubPem) {
+        handle = cand;
+        ident = { agent: cand, base, principal, runtime,
+          public_pem: pubPem, private_pem: privPem, enrolled_at: now() };
+        fs.mkdirSync(identityDir(), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(identityFile(cand), JSON.stringify(ident, null, 2), { mode: 0o600 });
+      }
+    }
+    if (!handle) die(EXIT.REFUSED, `could not allocate a handle for base "${base}" — 26 taken?`);
+  }
+
+  // Line up: doorbell to the live end, presence announced. Same effect as
+  // `join`, folded in so enroll is genuinely one call.
+  rpk(['group', 'seek', groupFor(handle), '--to', 'end', '--topics', WATCH.join(',')]);
+  heartbeat(handle, 'listening');
+
+  // Context: the map, not the territory.
+  const { desc } = indexRead();
+  const open = [...desc.values()].filter((d) => d.status === 'open');
+  const mine = open.filter((d) => (d.participants || []).includes(handle));
+  const escalations = [];
+  for (const e of readAll(T.threads)) {
+    if (e.type !== 'ESCALATE' || !e.thread) continue;
+    const st = threadState(e.thread);
+    if (st.msgs.some((m) => m.type === 'DECIDE')) continue;
+    if (escalationOwner(st.msgs) === handle) escalations.push(e.thread);
+  }
+  const live = [...presenceTable().entries()]
+    .filter(([a, p]) => p.live && a !== handle).map(([a]) => a);
+  const heldLeases = [...leases().values()]
+    .map((l) => ({ path: l.subject, holder: l.from.agent, expires_at: l.expires_at }));
+
+  const doc = {
+    protocol: 'agora/1',
+    identity: { agent: handle, principal: ident.principal, key_file: identityFile(handle) },
+    context: {
+      threads_open: open.map((d) => ({
+        thread: d.thread, title: d.title, hop: d.hop,
+        participants: d.participants, paths: d.paths, yours: mine.includes(d),
+      })),
+      escalations_owned: [...new Set(escalations)],
+      leases: heldLeases,
+      peers_live: live,
+    },
+  };
+  if (flags.json) return console.log(JSON.stringify(doc, null, 2));
+
+  console.log(`enrolled as ${handle}   (${ident.principal})`);
+  console.log(`  key      ${identityFile(handle)} — messages you send are now signed`);
+  console.log(`  doorbell seeked to live end; presence announced`);
+  console.log('');
+  if (doc.context.escalations_owned.length) {
+    console.log(`  YOU OWE A HUMAN AN ANSWER on: ${doc.context.escalations_owned.join(', ')}`);
+  }
+  console.log(open.length
+    ? `  open threads (${open.length}):`
+    : '  no open threads.');
+  for (const t of doc.context.threads_open) {
+    console.log(`    ${t.thread.padEnd(34)} hop ${t.hop}/${HOP_CAP}  [${(t.participants || []).join(', ')}]${t.yours ? '  ← yours' : ''}`);
+  }
+  if (live.length) console.log(`  live peers: ${live.join(', ')}`);
+  console.log('');
+  console.log(`  next: agora read <thread> for anything above that concerns you,`);
+  console.log(`        agora wait --as ${handle} to park the doorbell.`);
+};
+
+cmds.whoami = (flags) => {
+  const agent = agentName(flags);
+  const ident = loadIdentity(agent);
+  const pub = keysTable().byAgent.get(agent);
+  if (!ident) {
+    console.log(`${agent} — no enrolled identity on this machine (messages publish unsigned)`);
+    if (pub) console.log(`  NOTE: "${agent}" is enrolled on the bus by someone else (${pub.principal})`);
+    return;
+  }
+  const match = pub && pub.public_pem === ident.public_pem;
+  console.log(`${agent}   (${ident.principal})`);
+  console.log(`  key       ${identityFile(agent)}`);
+  console.log(`  published ${match ? 'yes — signatures verify' : pub ? 'CONFLICT — bus holds a different key for this handle' : 'NO — key not on the bus; re-enroll'}`);
 };
 
 /* ── convergence ───────────────────────────────────────────────────── */
@@ -1166,7 +1432,8 @@ cmds.read = (flags, args) => {
   const msgs = readAll(T.threads)
     .filter((e) => sources.includes(e.thread))
     .sort((a, b) => (a.ts < b.ts ? -1 : 1))
-    .map(markStale);
+    .map(markStale)
+    .map(markVerified);
   if (!msgs.length && !d) die(EXIT.REFUSED, `no such thread: ${id}`);
 
   if (flags.json) return console.log(JSON.stringify({ descriptor: d || null, messages: msgs }));
@@ -1295,7 +1562,11 @@ cmds.help = () => {
 
   doctor                              broker health, topics, live leases
   topics          [--ensure]          show or create the topics the protocol needs
-  join            --as A              seek to live end; announce presence
+  enroll          --name <base> [--runtime R] [--json]
+                  one call to be oriented: assigned handle, signing key,
+                  doorbell to live end, and a map of what is in flight
+  whoami          --as A              your identity and whether its key is published
+  join            --as A              seek to live end only (enroll does this and more)
   presence                            who is listening
   leases                              who holds what
 

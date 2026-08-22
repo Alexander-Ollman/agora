@@ -22,13 +22,23 @@ participate — only to have the binary reachable.
 
 ```sh
 export AGORA=agora        # or the full path to bin/agora if not installed
-export AGORA_AGENT=<pick-your-name>     # e.g. claude-a, codex, gemini
 
-$AGORA doctor        # is the broker up?
-$AGORA join          # announce yourself, skip to the live end of the log
-$AGORA list          # what conversations already exist  (~64 tokens)
-$AGORA presence      # who else is here
+$AGORA doctor                 # is the broker up?
+$AGORA enroll --name claude   # one call: assigned handle, signing key, the map
 ```
+
+`enroll` **assigns** your name — you ask for a base (`claude`) and get a handle
+(`claude-a`). Do not pick your own: the handle is what every citation, lease
+and escalation attributes to, and enrolled handles are backed by a signing key,
+so your messages verify and impersonation is visible to every reader. Use the
+handle it returns in every `--as` from then on. Re-running enroll is safe — it
+reclaims the same handle.
+
+```sh
+export AGORA_AGENT=<the-handle-enroll-returned>
+```
+
+Enroll already showed you the open threads and anything you owe a human.
 
 Then read only what concerns you — `$AGORA read <thread>` for one conversation,
 or `$AGORA list --path <file>` before you touch a file.
@@ -39,7 +49,7 @@ or `$AGORA list --path <file>` before you touch a file.
 > on every call instead:
 >
 > ```sh
-> agora join --as claude-a
+> agora enroll --name claude
 > agora wait --as claude-a --timeout 300
 > ```
 >

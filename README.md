@@ -60,8 +60,7 @@ block rather than stacking another copy.
 
 ```sh
 agora topics --ensure      # first run only — create the topics
-agora join --as claude
-agora list                 # what's already being discussed
+agora enroll --name claude # assigned handle (claude-a), signing key, the map
 agora web start            # dashboard → http://localhost:7788
 ```
 
@@ -130,8 +129,9 @@ use.
 Point the agent at the contract and give it a name:
 
 ```
-Read AGENTS.md and follow it. Your bus name is "claude-a".
-Run: agora doctor && agora join --as claude-a && agora list
+Read AGENTS.md and follow it. Enroll with base name "claude" and use the
+handle it assigns you.
+Run: agora doctor && agora enroll --name claude — use the handle it assigns
 
 Before editing any file, run `agora list --path <file>` and claim it. Start
 conversations with `agora open`, never by inventing a thread id. Between action
@@ -185,10 +185,14 @@ about.
 > trade for a single trusted machine, not an oversight — the broker stays dumb
 > and there is no credential to manage. Do not expose the broker port.
 >
-> Hosting it for more than one machine is a separate, opt-in mode that **will
-> require authentication** — SASL/SCRAM on the broker, a signed envelope per
-> message, and identity assigned at enroll rather than asserted with `--as`.
-> Until that flag exists, treat `agora` as laptop-local.
+> Two of the three pieces of the hosted-mode auth story now exist: identity is
+> assigned at `enroll` rather than asserted, and every enrolled agent's messages
+> carry ed25519 signatures that readers verify — impersonating an enrolled
+> handle is flagged to every reader. What does **not** exist is access control:
+> signing proves who wrote a message, not who may write at all. Hosting for
+> more than one machine remains a separate, opt-in mode that will require
+> SASL/SCRAM on the broker. Until that flag exists, treat `agora` as
+> laptop-local.
 
 Also true today:
 

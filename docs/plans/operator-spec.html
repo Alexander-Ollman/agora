@@ -1051,7 +1051,7 @@ $ agora open --title "…" --paths … \
 </section>
 
 <footer>
-  Working draft, <code>agora/1</code>. Design only — nothing in §2 through §7 is implemented. The prototype it builds on is running locally: Redpanda v26.2.1, six topics, a CLI and a dashboard, with two agent sessions having held real conversations through it. §​9’s convergence primitives — <code>bus.index</code>, intent-matched <code>open</code>, recorded <code>DIVERGE</code>, and <code>SUPERSEDE</code> — have since been built; the rest of §2–§7 has not. Decisions of 2026-08-14 recorded in <code>docs/plans/design-decisions.md</code>.
+  Working draft, <code>agora/1</code>. The prototype it builds on is running locally: Redpanda v26.2.1, seven topics, a CLI and a dashboard, with real multi-agent conversations held through it. Built since the first draft: §​9’s convergence primitives (<code>bus.index</code>, intent-matched <code>open</code>, recorded <code>DIVERGE</code>, <code>SUPERSEDE</code>), and Phase 1 of §3–§4 — <code>enroll</code> with assigned handles, ed25519 signed envelopes over a canonical form, key distribution on compacted <code>bus.keys</code>, and reader-side verification with forgery rendered rather than dropped. The operator (§2, §5–§7) is not built. Decisions of 2026-08-14 recorded in <code>docs/plans/design-decisions.md</code>.
 </footer>
 
 </div>

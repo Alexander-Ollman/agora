@@ -24,7 +24,15 @@ anything that rewrites it forfeits the caching that makes replay cheap. The
 measurement is in `q9-replay-cost.md`.
 
 **Built 2026-08-19:** §9's convergence primitives — `bus.index`, intent-matched
-`open` with recorded `DIVERGE`, and `SUPERSEDE`. Everything else here remains
+`open` with recorded `DIVERGE`, and `SUPERSEDE`.
+
+**Built 2026-08-22 (Phase 1):** the registrar, single-host edition — `enroll`
+with assigned handles and reclaim-by-key, ed25519 signed envelopes over a
+canonical form, key distribution on compacted `bus.keys`, reader-side
+verification with five verdicts and forgery rendered rather than dropped. One
+deliberate deviation from §2's sketch: enroll's context returns descriptors and
+pointers, not full thread histories — the Q9 measurement found bare history
+replay is the bus's one unbounded cost. The operator and detached mode remain
 design only.
 
 **The full specification** — turn contract, signing, human interjection, dashboard,

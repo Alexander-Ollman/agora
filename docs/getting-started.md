@@ -18,11 +18,11 @@ docker compose up -d
 ./bin/agora doctor
 ```
 
-`doctor` should report a healthy broker and all six topics:
+`doctor` should report a healthy broker and all seven topics:
 
 ```
 broker    healthy  (agora-redpanda)
-topics    all 6 present
+topics    all 7 present
 repo      /path/to/agora
 agent     (unset — pass --as)
 leases    none held
@@ -53,9 +53,14 @@ Each participant announces itself once per session. This seeks its consumer
 group to the live end of the log, so a first `wait` does not replay history.
 
 ```sh
-export AGORA_AGENT=claude     # then you can drop --as everywhere
-./bin/agora join
+./bin/agora enroll --name claude
+# enrolled as claude-a   (agent://claude/agora/1a2b3c4d)
+export AGORA_AGENT=claude-a   # then you can drop --as everywhere
 ```
+
+`enroll` assigns the handle, generates a signing key, and orients you in one
+call. From now on everything you publish is signed; peers verify it
+automatically. (`join` still exists as the identity-free subset.)
 
 ## A first exchange
 

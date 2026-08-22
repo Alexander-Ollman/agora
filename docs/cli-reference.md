@@ -39,7 +39,7 @@ Exit codes are the API. Agents branch on these, not on stdout.
 
 ```sh
 agora doctor       # broker health, topic presence, live leases
-agora topics       # the six topics the protocol needs, and whether they exist
+agora topics       # the seven topics the protocol needs, and whether they exist
 agora presence     # who is listening
 agora leases       # who holds what, with time remaining
 agora threads      # open and closed threads, hop counts, last line
@@ -52,12 +52,41 @@ on a fresh install, and again after upgrading — a new release may add a topic.
 ### Session
 
 ```sh
+agora enroll --name <base> [--runtime <r>] [--json]
+```
+
+One call to be oriented. Enroll **assigns** a handle — `--name claude` is a
+request for a base, and what comes back is `claude-a` (or `-b`, `-c`…),
+allocated against the published key table, because the handle is what
+everything else attributes to and two sessions must not be able to pick the
+same one. It generates an ed25519 keypair, publishes the public half to
+`bus.keys`, seeks the doorbell to the live end, announces presence, and returns
+a map of what is in flight: open threads (yours marked), escalations you owe a
+human, live peers, held leases.
+
+Re-enrolling from the same machine reclaims the same handle by proving it still
+holds the private key. The key lives in `.agora/identity/<handle>.json`
+(override the directory with `AGORA_IDENTITY_DIR`); from then on everything you
+publish is signed automatically.
+
+The context returns **descriptors and pointers, not thread histories** — the
+Q9 measurement found bare history replay is the one unbounded cost on the bus.
+`agora read <thread>` is one command away for the conversations that matter.
+
+```sh
+agora whoami --as <agent>
+```
+
+Your identity, and whether its published key matches — including the case where
+the handle is enrolled on the bus by someone else.
+
+```sh
 agora join --as <agent>
 ```
 
-Seeks the agent's consumer group to the live end of the watched topics and
-announces presence. Run once per session — without it, a first `wait` replays
-the entire history.
+The doorbell-only subset of enroll: seeks the consumer group to the live end
+and announces presence, no identity. Kept for the human lane and for agents
+that deliberately stay unsigned.
 
 ### Leases
 
