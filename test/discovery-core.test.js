@@ -100,6 +100,8 @@ test('published schemas are closed JSON Schema 2020-12 documents', () => {
   assert.equal(page.properties.items.items.properties.participation.const, 'unverified');
   const card = JSON.parse(readFileSync(path.join(ROOT, 'schema', 'DiscoveryCardV1.schema.json'), 'utf8'));
   assert.equal(card.$defs.common.properties.issuedAt.pattern, 'Z$');
+  assert.equal(card.$defs.thread.allOf[1].properties.title.maxLength, 256);
+  assert.equal(card.$defs.thread.allOf[1].properties.title.pattern, '^[^\\u0000-\\u001f\\u007f]+$');
   assert.equal(page.properties.observedAt.pattern, 'Z$');
 });
 
@@ -229,6 +231,15 @@ test('date-time validation matches the RFC3339 UTC schema boundary', async () =>
   })), (error) => error instanceof DiscoveryValidationError && error.pointer === '/issuedAt');
 });
 
+test('thread title validation matches the schema character and control bounds', async () => {
+  const [{ validateDiscoveryCard, DiscoveryValidationError }] = await load;
+  assert.equal(validateDiscoveryCard(thread('unicode', { title: 'é'.repeat(256) })).title.length, 256);
+  assert.throws(() => validateDiscoveryCard(thread('long-title', { title: 'é'.repeat(257) })), (error) =>
+    error instanceof DiscoveryValidationError && error.pointer === '/title');
+  assert.throws(() => validateDiscoveryCard(thread('control-title', { title: 'line one\nline two' })), (error) =>
+    error instanceof DiscoveryValidationError && error.pointer === '/title');
+});
+
 test('pagination is deterministic, repeatable, and query-bound', async () => {
   const [{ DiscoveryValidationError }, , , { InMemoryDiscoveryAdapter }] = await load;
   const adapter = new InMemoryDiscoveryAdapter({
@@ -255,6 +266,24 @@ test('a cursor fails closed when the visible snapshot changes', async () => {
   const changedAdapter = new InMemoryDiscoveryAdapter({ now: () => NOW, records: ['alpha', 'charlie'].map((id) => record(agent(id))) });
   await assert.rejects(() => changedAdapter.search(query({ kinds: ['agent'], limit: 1, cursor: first.nextCursor }), access()), (error) =>
     error instanceof DiscoveryValidationError && error.code === 'cursor_stale');
+});
+
+test('maximum-length identities produce bounded deterministic cursors', async () => {
+  const [, , , { InMemoryDiscoveryAdapter }] = await load;
+  const longAgent = (suffix) => agent(suffix, {
+    principalId: `agent://${'a'.repeat(239)}${suffix}`,
+    handle: `h${suffix}`,
+    sourceVersion: 's'.repeat(64),
+  });
+  const adapter = new InMemoryDiscoveryAdapter({
+    now: () => NOW,
+    records: [record(longAgent('x')), record(longAgent('y'))],
+  });
+  const first = await adapter.search(query({ kinds: ['agent'], limit: 1 }), access());
+  assert.ok(first.nextCursor.length <= 512);
+  const second = await adapter.search(query({ kinds: ['agent'], limit: 1, cursor: first.nextCursor }), access());
+  assert.equal(second.items.length, 1);
+  assert.equal(second.nextCursor, null);
 });
 
 test('results remain suggestion-only and immutable', async () => {
@@ -321,6 +350,14 @@ test('external adapter results pass through a strict public validator', async ()
   };
   await assert.rejects(() => searchDiscovery(lying, query({ kinds: ['agent'] }), access()), (error) =>
     error instanceof DiscoveryValidationError && error.code === 'invalid_result');
+
+  const twoItems = new InMemoryDiscoveryAdapter({
+    now: () => NOW,
+    records: [record(agent('alpha')), record(agent('beta'))],
+  });
+  const oversizedPage = await twoItems.search(query({ kinds: ['agent'], limit: 2 }), access());
+  await assert.rejects(() => searchDiscovery({ search: async () => oversizedPage }, query({ kinds: ['agent'], limit: 1 }), access()), (error) =>
+    error instanceof DiscoveryValidationError && error.code === 'invalid_result' && error.pointer === '/items');
 });
 
 test('the executable example reports discovery only', () => {

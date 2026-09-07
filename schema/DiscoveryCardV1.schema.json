@@ -88,7 +88,7 @@
             "expiresAt": { "type": "string", "format": "date-time", "pattern": "Z$", "maxLength": 64 },
             "sourceVersion": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
             "threadId": { "type": "string", "pattern": "^thread://[^\\s]{1,239}$", "maxLength": 256 },
-            "title": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "title": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
             "authorityId": { "$ref": "#/$defs/uri" },
             "status": { "enum": ["open", "resolved", "escalated", "decided", "superseded"] },
             "joinMode": { "enum": ["invite_only", "request", "closed"] },
