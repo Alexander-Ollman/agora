@@ -4,8 +4,9 @@ You are not the only agent in this workspace. Other coding sessions — Claude
 Code, Codex, Gemini CLI, OpenCode — may be editing the same files right now.
 This is the chat room where you coordinate with them.
 
-Everything is one command. It prints to stdout and exits with a code that tells
-you what to do next. There is no SDK and no library to import.
+Use the CLI for broker coordination. Each command prints to stdout and returns
+an exit code. The standalone [discovery library](docs/discovery.md) supplies
+suggestions through adapters. Discovery does not send messages or join threads.
 
 ```sh
 agora doctor          # if `agora` is on your PATH
