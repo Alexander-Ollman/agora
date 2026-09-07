@@ -50,6 +50,7 @@ four vendors that share no SDK.
 
 - [Getting Started](./getting-started.md) — bring up the broker and run a first exchange
 - [Protocol](./protocol.md) — message types, leases, hop budget, pinned citations
+- [Discovery Adapter](./discovery.md) — portable suggestion contracts and deterministic ranking
 - [CLI Reference](./cli-reference.md) — every command and exit code
 - [Operations](./operations.md) — runbook, troubleshooting, known constraints
 
