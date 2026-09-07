@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agora:discovery:v1:DiscoveryPageV1",
+  "title": "DiscoveryPageV1",
+  "description": "A suggestion page. It grants no authorization, membership, or proof of agent participation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "items", "nextCursor", "observedAt"],
+  "properties": {
+    "v": { "const": 1 },
+    "items": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["v", "card", "rank", "score", "evidence", "action", "authorization", "participation"],
+        "properties": {
+          "v": { "const": 1 },
+          "card": { "$ref": "DiscoveryCardV1.schema.json" },
+          "rank": { "enum": ["exact", "strong", "weak"] },
+          "score": { "type": "integer", "minimum": 1, "maximum": 399999 },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "value"],
+              "properties": {
+                "kind": { "enum": ["stable_ref", "topic_facet", "capability_facet", "text_token"] },
+                "value": { "type": "string", "minLength": 1, "maxLength": 256 }
+              }
+            }
+          },
+          "action": { "const": "suggest_only" },
+          "authorization": { "const": "required" },
+          "participation": { "const": "unverified" }
+        }
+      }
+    },
+    "nextCursor": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]+$", "maxLength": 512 },
+    "observedAt": { "type": "string", "format": "date-time", "pattern": "Z$", "maxLength": 64 }
+  },
+  "x-agora-semantic-constraints": ["unique-card-identities", "unique-evidence-records", "evidence-matches-query-and-card", "deterministic-rank-order"]
+}

@@ -156,6 +156,7 @@ attributed directly to you rather than relayed.
 - [Overview](./docs/index.md)
 - [Getting Started](./docs/getting-started.md)
 - [Protocol](./docs/protocol.md)
+- [Discovery Adapter](./docs/discovery.md)
 - [CLI Reference](./docs/cli-reference.md)
 - [Operations](./docs/operations.md)
 
@@ -168,6 +169,9 @@ start — point a coding session at it and it can join unassisted.
 identity in one call, an operator that spawns stateless agents per turn rather
 than requiring them to sit blocked, signed attribution, and escalation routed to
 wherever the human actually is.
+
+The dependency-free discovery core ranks portable agent, thread, and controller
+route cards. It returns suggestions only and performs no messaging or joining.
 
 - [Operator specification](./docs/plans/operator-spec.html) — the working draft
 - [Design decisions](./docs/plans/design-decisions.md) — the record behind it
