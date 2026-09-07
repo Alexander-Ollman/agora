@@ -25,13 +25,11 @@
             "minItems": 1,
             "maxItems": 64,
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["kind", "value"],
-              "properties": {
-                "kind": { "enum": ["stable_ref", "topic_facet", "capability_facet", "text_token"] },
-                "value": { "type": "string", "minLength": 1, "maxLength": 256 }
-              }
+              "oneOf": [
+                { "$ref": "#/$defs/stableRefEvidence" },
+                { "$ref": "#/$defs/facetEvidence" },
+                { "$ref": "#/$defs/textEvidence" }
+              ]
             }
           },
           "action": { "const": "suggest_only" },
@@ -41,7 +39,30 @@
       }
     },
     "nextCursor": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]+$", "maxLength": 512 },
-    "observedAt": { "type": "string", "format": "date-time", "pattern": "Z$", "maxLength": 64 }
+    "observedAt": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$", "maxLength": 64 }
+  },
+  "$defs": {
+    "stableRefEvidence": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "value"],
+      "properties": {
+        "kind": { "const": "stable_ref" },
+        "value": { "type": "string", "pattern": "^[a-z][a-z0-9+.-]*://[!-~]{1,240}$", "maxLength": 256 }
+      }
+    },
+    "facetEvidence": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "value"],
+      "properties": {
+        "kind": { "enum": ["topic_facet", "capability_facet"] },
+        "value": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:/-]{0,127}$", "maxLength": 128 }
+      }
+    },
+    "textEvidence": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "value"],
+      "properties": {
+        "kind": { "const": "text_token" },
+        "value": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$", "maxLength": 64 }
+      }
+    }
   },
   "x-agora-semantic-constraints": ["unique-card-identities", "unique-evidence-records", "evidence-matches-query-and-card", "deterministic-rank-order"]
 }

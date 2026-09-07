@@ -10,6 +10,7 @@ const ROOT = path.resolve(__dirname, '..');
 const NOW = new Date('2026-09-07T12:00:00.000Z');
 const ISSUED = '2026-09-07T11:00:00.000Z';
 const EXPIRES = '2026-09-07T13:00:00.000Z';
+const RFC3339_SCHEMA_PATTERN = '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$';
 
 const load = Promise.all([
   import('../lib/discovery/contracts.mjs'),
@@ -95,14 +96,23 @@ test('published schemas are closed JSON Schema 2020-12 documents', () => {
   const page = JSON.parse(readFileSync(path.join(ROOT, 'schema', 'DiscoveryPageV1.schema.json'), 'utf8'));
   assert.equal(page.additionalProperties, false);
   assert.equal(page.properties.items.items.additionalProperties, false);
+  assert.equal(page.properties.items.items.properties.evidence.items.oneOf.length, 3);
+  assert.equal(page.$defs.stableRefEvidence.additionalProperties, false);
   assert.equal(page.properties.items.items.properties.action.const, 'suggest_only');
   assert.equal(page.properties.items.items.properties.authorization.const, 'required');
   assert.equal(page.properties.items.items.properties.participation.const, 'unverified');
   const card = JSON.parse(readFileSync(path.join(ROOT, 'schema', 'DiscoveryCardV1.schema.json'), 'utf8'));
-  assert.equal(card.$defs.common.properties.issuedAt.pattern, 'Z$');
+  assert.equal(card.$defs.common.properties.issuedAt.pattern, RFC3339_SCHEMA_PATTERN);
+  assert.equal(card.$defs.uri.pattern, '^[a-z][a-z0-9+.-]*://[!-~]{1,240}$');
+  assert.equal(card.$defs.controllerRoute.allOf[1].properties.routeId.pattern, '^route://[!-~]{1,240}$');
+  assert.equal(card.$defs.agent.allOf[1].properties.principalId.pattern, '^agent://[!-~]{1,240}$');
+  assert.equal(card.$defs.thread.allOf[1].properties.threadId.pattern, '^thread://[!-~]{1,239}$');
   assert.equal(card.$defs.thread.allOf[1].properties.title.maxLength, 256);
   assert.equal(card.$defs.thread.allOf[1].properties.title.pattern, '^[^\\u0000-\\u001f\\u007f]+$');
-  assert.equal(page.properties.observedAt.pattern, 'Z$');
+  const querySchema = JSON.parse(readFileSync(path.join(ROOT, 'schema', 'DiscoveryQueryV1.schema.json'), 'utf8'));
+  assert.equal(querySchema.$defs.uris.items.pattern, card.$defs.uri.pattern);
+  assert.equal(page.$defs.stableRefEvidence.properties.value.pattern, card.$defs.uri.pattern);
+  assert.equal(page.properties.observedAt.pattern, RFC3339_SCHEMA_PATTERN);
 });
 
 test('cards accept portable owner-defined facets and stable references', async () => {
@@ -114,6 +124,40 @@ test('cards accept portable owner-defined facets and stable references', async (
   }));
   assert.deepEqual(card.topicFacets, ['climate:modeling', 'owner.example/custom-topic']);
   assert.deepEqual(card.stableRefs, ['ticket://another-system/42']);
+});
+
+test('public URI fields share printable ASCII schema and runtime bounds', async (t) => {
+  const [{ validateDiscoveryAccess, validateDiscoveryCard, validateDiscoveryPage, validateDiscoveryQuery, validateDiscoveryRecord, DiscoveryValidationError }, { rankDiscoveryCards }] = await load;
+  const maximumUri = `${'a'.repeat(13)}://${'x'.repeat(240)}`;
+  assert.equal(maximumUri.length, 256);
+  assert.equal(validateDiscoveryCard(route('minimum', { routeId: 'route://x', authorityId: maximumUri })).routeId, 'route://x');
+  assert.equal(validateDiscoveryCard(agent('minimum', { principalId: 'agent://x' })).principalId, 'agent://x');
+  assert.equal(validateDiscoveryCard(thread('minimum', { threadId: 'thread://x' })).threadId, 'thread://x');
+
+  const page = rankDiscoveryCards(query({ kinds: ['agent'] }), [agent()], { now: NOW });
+  const invalidCases = (invalidUri) => [
+    () => validateDiscoveryCard(route('route-uri', { routeId: `route://${invalidUri}` })),
+    () => validateDiscoveryCard(agent('agent-uri', { principalId: `agent://${invalidUri}` })),
+    () => validateDiscoveryCard(thread('thread-uri', { threadId: `thread://${invalidUri}` })),
+    () => validateDiscoveryCard(agent('authority-uri', { authorityId: `authority://${invalidUri}` })),
+    () => validateDiscoveryCard(agent('stable-ref', { stableRefs: [`work://${invalidUri}`] })),
+    () => validateDiscoveryRecord(record(agent(), { visibility: 'restricted', visibleTo: [`agent://${invalidUri}`] })),
+    () => validateDiscoveryAccess({ requesterId: `agent://${invalidUri}` }),
+    () => validateDiscoveryQuery(query({ stableRefs: [`work://${invalidUri}`] })),
+    () => validateDiscoveryPage({
+      v: 1,
+      items: [{ ...page[0], evidence: [{ kind: 'stable_ref', value: `work://${invalidUri}` }] }],
+      nextCursor: null,
+      observedAt: NOW.toISOString(),
+    }),
+  ];
+  for (const [name, invalidUri] of [['unicode', 'é'], ['control', '\u0001']]) {
+    await t.test(name, () => {
+      for (const reject of invalidCases(invalidUri)) {
+        assert.throws(reject, DiscoveryValidationError);
+      }
+    });
+  }
 });
 
 test('cards reject private or credential-like extension fields', async (t) => {
@@ -228,6 +272,9 @@ test('date-time validation matches the RFC3339 UTC schema boundary', async () =>
   })), (error) => error instanceof DiscoveryValidationError && error.pointer === '/issuedAt');
   assert.throws(() => validateDiscoveryCard(agent('calendar-date', {
     issuedAt: '2026-02-30T11:00:00Z',
+  })), (error) => error instanceof DiscoveryValidationError && error.pointer === '/issuedAt');
+  assert.throws(() => validateDiscoveryCard(agent('fraction-date', {
+    issuedAt: '2026-09-07T11:00:00.1234567890Z',
   })), (error) => error instanceof DiscoveryValidationError && error.pointer === '/issuedAt');
 });
 

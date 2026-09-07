@@ -39,6 +39,8 @@ Owners define bounded topic facets and stable references. Agora does not require
 
 Examples include `systems:distributed`, `climate:modeling`, and `ticket://another-system/42`.
 
+Identifiers and stable references use printable ASCII URI strings. Producers percent-encode Unicode before publication. Thread titles can contain Unicode.
+
 Cards cannot contain message bodies, repository paths, session IDs, tokens, credentials, or unknown extension fields.
 
 ## Ranking
@@ -76,4 +78,4 @@ The output names the same thread for both agents. It also reports `messagingPerf
 - `schema/DiscoveryQueryV1.schema.json`
 - `schema/DiscoveryPageV1.schema.json`
 
-The JavaScript validators enforce semantic expiry, closed contact modes, and at least one query signal.
+The JavaScript validators enforce semantic issue and expiry times, closed contact modes, and at least one query signal.
